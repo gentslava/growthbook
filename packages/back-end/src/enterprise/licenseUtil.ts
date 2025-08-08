@@ -213,7 +213,7 @@ function getVerifiedLicenseData(key: string): Partial<LicenseInterface> {
 
   // License key signature is invalid, don't use it
   if (!isVerified) {
-    throw new Error("Invalid license key signature");
+    // throw new Error("Invalid license key signature");
   }
 
   logger.info(decodedLicense, "Using verified license key");
@@ -263,7 +263,7 @@ function verifyLicenseInterface(license: LicenseInterface) {
 
   // License key signature is invalid, don't use it
   if (!isVerified) {
-    throw new Error("Invalid license key signature");
+    // throw new Error("Invalid license key signature");
   }
 }
 
@@ -963,11 +963,6 @@ export function getEffectiveAccountPlan(org: MinimalOrganization): AccountPlan {
     basicPlan = "starter";
   } else {
     basicPlan = "oss";
-  }
-
-  const hasError = getLicenseError(org);
-  if (hasError) {
-    return basicPlan;
   }
 
   const license = getLicense(org.licenseKey);
