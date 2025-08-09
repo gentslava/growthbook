@@ -81,3 +81,5 @@ GrowthBook is an Open Core product. The bulk of the code is under the permissive
 View the `LICENSE` file in this repository for the full text and details.
 
 ![GrowthBook Repository Stats](https://repobeats.axiom.co/api/embed/13ffc63ec5ce7fe45efa95dd326d9185517f0a15.svg "GrowthBook Repository Stats")
+
+https://codebeautify.org/json-to-base64-converter/y2590d3fc
