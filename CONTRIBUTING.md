@@ -50,7 +50,7 @@ It's **strongly recommended** that if you are using WSL on Windows that you run 
 docker run -d -p 27017:27017 --name mongo \
   -e MONGO_INITDB_ROOT_USERNAME=root \
   -e MONGO_INITDB_ROOT_PASSWORD=password \
-  -v ~/gb_mongo_data/:/data/db \
+  -v gb_mongo_data:/data/db \
   mongo
 ```
 
