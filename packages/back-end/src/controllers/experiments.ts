@@ -132,7 +132,7 @@ import {
   generateEmbeddings,
   secondsUntilAICanBeUsedAgain,
   simpleCompletion,
-} from "back-end/src/enterprise/services/ollama";
+} from "back-end/src/enterprise/services/providerAI";
 
 export const SNAPSHOT_TIMEOUT = 30 * 60 * 1000;
 
@@ -210,7 +210,7 @@ export async function postAIExperimentAnalysis(
     });
   }
 
-  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context.org);
+  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context);
   if (secondsUntilReset > 0) {
     return res.status(429).json({
       status: 429,
@@ -402,7 +402,7 @@ export async function postSimilarExperiments(
       message: "AI configuration not set or enabled",
     });
   }
-  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context.org);
+  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context);
   if (secondsUntilReset > 0) {
     return res.status(429).json({
       status: 429,
@@ -544,7 +544,7 @@ export async function postRegenerateEmbeddings(
       message: "AI configuration not set or enabled",
     });
   }
-  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context.org);
+  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context);
   if (secondsUntilReset > 0) {
     return res.status(429).json({
       status: 429,

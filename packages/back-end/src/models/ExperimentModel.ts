@@ -43,7 +43,7 @@ import {
 import {
   generateEmbeddings,
   simpleCompletion,
-} from "back-end/src/enterprise/services/ollama";
+} from "back-end/src/enterprise/services/providerAI";
 import { IdeaDocument } from "./IdeasModel";
 import { addTags } from "./TagModel";
 import { createEvent } from "./EventModel";
