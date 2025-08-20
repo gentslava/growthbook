@@ -34,7 +34,7 @@ const MESSAGE_TOKEN_LIMIT = MODEL_TOKEN_LIMIT - 30;
 export const getOpenAI = (context: ReqContext | ApiReqContext) => {
   const { aiEnabled, openAIAPIKey, openAIDefaultModel } = getAISettingsForOrg(
     context,
-    true
+    true,
   );
   let _openai: OpenAI | null = null;
   if (openAIAPIKey && aiEnabled) {
@@ -59,7 +59,7 @@ type ChatCompletionRequestMessage = {
  */
 const numTokensFromMessages = (
   messages: ChatCompletionRequestMessage[],
-  context: ReqContext | ApiReqContext
+  context: ReqContext | ApiReqContext,
 ) => {
   let encoding;
   try {
@@ -85,13 +85,10 @@ const numTokensFromMessages = (
 };
 
 export const secondsUntilAICanBeUsedAgain = async (
-  organization: OrganizationInterface
+  organization: OrganizationInterface,
 ) => {
-  const {
-    numTokensUsed,
-    dailyLimit,
-    nextResetAt,
-  } = await getTokensUsedByOrganization(organization);
+  const { numTokensUsed, dailyLimit, nextResetAt } =
+    await getTokensUsedByOrganization(organization);
   return numTokensUsed > dailyLimit
     ? (nextResetAt - new Date().getTime()) / 1000
     : 0;
@@ -134,12 +131,12 @@ export const simpleCompletion = async ({
   const numTokens = numTokensFromMessages(messages, context);
   if (maxTokens != null && numTokens > maxTokens) {
     throw new Error(
-      `Number of tokens (${numTokens}) exceeds maxTokens (${maxTokens})`
+      `Number of tokens (${numTokens}) exceeds maxTokens (${maxTokens})`,
     );
   }
   if (numTokens > MESSAGE_TOKEN_LIMIT) {
     throw new Error(
-      `Number of tokens (${numTokens}) exceeds MESSAGE_TOKEN_LIMIT (${MESSAGE_TOKEN_LIMIT})`
+      `Number of tokens (${numTokens}) exceeds MESSAGE_TOKEN_LIMIT (${MESSAGE_TOKEN_LIMIT})`,
     );
   }
 
@@ -151,8 +148,8 @@ export const simpleCompletion = async ({
     jsonSchema && supportsJSONSchema(model)
       ? { type: "json_schema", json_schema: jsonSchema }
       : returnType === "json"
-      ? { type: "json_object" }
-      : { type: "text" };
+        ? { type: "json_object" }
+        : { type: "text" };
   const response = await openai.chat.completions.create({
     model,
     messages,
@@ -187,7 +184,6 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
   type,
   isDefaultPrompt,
   zodObjectSchema,
-  model,
 }: {
   context: ReqContext | ApiReqContext;
   instructions?: string;
@@ -197,9 +193,8 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
   type: AIPromptType;
   isDefaultPrompt: boolean;
   zodObjectSchema: T;
-  model?: TiktokenModel;
 }): Promise<z.infer<T>> => {
-  const { client: openai, model: defaultModel } = getOpenAI(context);
+  const { client: openai, model } = getOpenAI(context);
 
   if (openai == null) {
     throw new Error("OpenAI not enabled or key not set");
@@ -207,7 +202,7 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
 
   if (!zodObjectSchema) {
     throw new Error(
-      "a Zod Object for the JSON schema is required for structuredPrompt."
+      "a Zod Object for the JSON schema is required for structuredPrompt.",
     );
   }
 
@@ -216,34 +211,30 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
   const numTokens = numTokensFromMessages(messages, context);
   if (maxTokens != null && numTokens > maxTokens) {
     throw new Error(
-      `Number of tokens (${numTokens}) exceeds maxTokens (${maxTokens})`
+      `Number of tokens (${numTokens}) exceeds maxTokens (${maxTokens})`,
     );
   }
   if (numTokens > MESSAGE_TOKEN_LIMIT) {
     throw new Error(
-      `Number of tokens (${numTokens}) exceeds MESSAGE_TOKEN_LIMIT (${MESSAGE_TOKEN_LIMIT})`
+      `Number of tokens (${numTokens}) exceeds MESSAGE_TOKEN_LIMIT (${MESSAGE_TOKEN_LIMIT})`,
     );
   }
-  const modelToUse = model || defaultModel;
 
   const response_format:
     | ResponseFormatText
     | ResponseFormatJSONSchema
     | ResponseFormatJSONObject = zodResponseFormat(
     zodObjectSchema,
-    "response_schema"
+    "response_schema",
   );
-  if (
-    !supportsJSONSchema(modelToUse) &&
-    response_format.type === "json_schema"
-  ) {
+  if (!supportsJSONSchema(model) && response_format.type === "json_schema") {
     throw new Error(
-      `Model ${modelToUse} does not support JSON schema response format. Please use a model that supports it, such as gpt-4o or higher.`
+      `Model ${model} does not support JSON schema response format. Please use a model that supports it, such as gpt-4o or higher.`,
     );
   }
 
   const response = await openai.chat.completions.parse({
-    model: modelToUse,
+    model,
     messages,
     response_format,
     ...(temperature != null ? { temperature } : {}),
@@ -255,7 +246,7 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
   logCloudAIUsage({
     organization: context.org.id,
     type,
-    model: modelToUse,
+    model,
     numPromptTokensUsed: response.usage?.prompt_tokens ?? 0,
     numCompletionTokensUsed: response.usage?.completion_tokens ?? 0,
     temperature,
@@ -283,7 +274,7 @@ export const supportsJSONSchema = (model: TiktokenModel) => {
 
 const constructOpenAIMessages = (
   prompt: string,
-  instructions?: string
+  instructions?: string,
 ): ChatCompletionRequestMessage[] => {
   const messages: ChatCompletionRequestMessage[] = [];
 
@@ -320,10 +311,11 @@ export const generateEmbeddings = async ({
   }
 
   try {
-    return await openai.embeddings.create({
+    const { data } = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input,
     });
+    return data;
   } catch (error) {
     throw new Error("Failed to generate embeddings: " + error);
   }

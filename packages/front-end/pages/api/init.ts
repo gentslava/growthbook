@@ -33,6 +33,7 @@ export interface EnvironmentInitValue {
   stripePublishableKey: string;
   experimentRefreshFrequency: number;
   hasOpenAIKey?: boolean;
+  hasOllamaServer?: boolean;
 }
 
 // Get env variables at runtime on the front-end while still using SSG
@@ -63,12 +64,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
     EXPERIMENT_REFRESH_FREQUENCY,
     OPENAI_API_KEY,
+    OLLAMA_BASE_URL,
   } = process.env;
 
   const rootPath = path.join(__dirname, "..", "..", "..", "..", "..", "..");
 
   const hasConfigFile = fs.existsSync(
-    path.join(rootPath, "config", "config.yml")
+    path.join(rootPath, "config", "config.yml"),
   );
 
   const build = {
@@ -114,7 +116,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     allowSelfOrgCreation: stringToBoolean(ALLOW_SELF_ORG_CREATION),
     showMultiOrgSelfSelector: stringToBoolean(
       SHOW_MULTI_ORG_SELF_SELECTOR,
-      true
+      true,
     ),
     config: hasConfigFile ? "file" : "db",
     allowCreateMetrics: !hasConfigFile || stringToBoolean(ALLOW_CREATE_METRICS),
@@ -129,10 +131,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       DISABLE_TELEMETRY === "debug"
         ? "debug"
         : DISABLE_TELEMETRY === "enable-with-debug"
-        ? "enable-with-debug"
-        : DISABLE_TELEMETRY
-        ? "disable"
-        : "enable",
+          ? "enable-with-debug"
+          : DISABLE_TELEMETRY
+            ? "disable"
+            : "enable",
     sentryDSN: NEXT_PUBLIC_SENTRY_DSN || "",
     usingSSO: !!SSO_CONFIG, // No matter what SSO_CONFIG is set to we want it to count as using it.
     storeSegmentsInMongo: stringToBoolean(STORE_SEGMENTS_IN_MONGO),
@@ -144,6 +146,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       ? parseInt(EXPERIMENT_REFRESH_FREQUENCY)
       : 6,
     hasOpenAIKey: !!OPENAI_API_KEY || false,
+    hasOllamaServer: !!OLLAMA_BASE_URL || false,
   };
 
   res.setHeader("Cache-Control", "max-age=3600").status(200).json(body);
