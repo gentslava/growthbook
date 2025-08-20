@@ -103,7 +103,7 @@ export async function getOrganizationById(id: string) {
 
 export function validateLoginMethod(
   org: OrganizationInterface,
-  req: AuthRequest
+  req: AuthRequest,
 ) {
   if (
     org.restrictLoginMethod &&
@@ -114,7 +114,7 @@ export function validateLoginMethod(
         org.restrictLoginMethod.startsWith("vercel:")
           ? "Vercel"
           : "Enterprise SSO"
-      }`
+      }`,
     );
   }
 
@@ -133,7 +133,7 @@ export function validateLoginMethod(
     !req.authSubject?.startsWith(org.restrictAuthSubPrefix)
   ) {
     throw new Error(
-      `Your organization requires you to login with ${org.restrictAuthSubPrefix}`
+      `Your organization requires you to login with ${org.restrictAuthSubPrefix}`,
     );
   }
 
@@ -179,7 +179,7 @@ export function getConfidenceLevelsForOrg(context: ReqContext) {
 
 export function getAISettingsForOrg(
   context: ReqContext,
-  includeKey: boolean = false
+  includeKey: boolean = false,
 ): {
   aiEnabled: boolean;
   aiProvider: "openai" | "ollama" | null;
@@ -252,7 +252,7 @@ export function getPValueThresholdForOrg(context: ReqContext): number {
 }
 
 export function getPValueCorrectionForOrg(
-  context: ReqContext
+  context: ReqContext,
 ): PValueCorrection {
   return context.org.settings?.pValueCorrection ?? null;
 }
@@ -260,7 +260,7 @@ export function getPValueCorrectionForOrg(
 export function getRole(
   org: OrganizationInterface,
   userId: string,
-  project?: string
+  project?: string,
 ): MemberRoleInfo {
   const member = org.members.find((m) => m.id === userId);
 
@@ -268,7 +268,7 @@ export function getRole(
     // Project-specific role
     if (project && member.projectRoles) {
       const projectRole = member.projectRoles.find(
-        (r) => r.project === project
+        (r) => r.project === project,
       );
       if (projectRole) {
         return projectRole;
@@ -287,7 +287,7 @@ export function getRole(
 }
 
 export function getNumberOfUniqueMembersAndInvites(
-  organization: OrganizationInterface
+  organization: OrganizationInterface,
 ) {
   // There was a bug that allowed duplicate members in the members array
   const numMembers = new Set(organization.members.map((m) => m.id)).size;
@@ -298,11 +298,11 @@ export function getNumberOfUniqueMembersAndInvites(
 
 export async function removeMember(
   organization: OrganizationInterface,
-  id: string
+  id: string,
 ) {
   const members = organization.members.filter((member) => member.id !== id);
   const pendingMembers = (organization?.pendingMembers || []).filter(
-    (member) => member.id !== id
+    (member) => member.id !== id,
   );
 
   if (!members.length) {
@@ -322,7 +322,7 @@ export async function removeMember(
     updatedOrganization,
     getUserCodesForOrg,
     getLicenseMetaData,
-    true
+    true,
   );
 
   return updatedOrganization;
@@ -330,7 +330,7 @@ export async function removeMember(
 
 export async function revokeInvite(
   organization: OrganizationInterface,
-  key: string
+  key: string,
 ) {
   const invites = organization.invites.filter((invite) => invite.key !== key);
 
@@ -344,7 +344,7 @@ export async function revokeInvite(
     updatedOrganization,
     getUserCodesForOrg,
     getLicenseMetaData,
-    true
+    true,
   );
 
   return updatedOrganization;
@@ -419,7 +419,7 @@ export async function addMemberToOrg({
     updatedOrganization,
     getUserCodesForOrg,
     getLicenseMetaData,
-    true
+    true,
   );
 }
 
@@ -458,7 +458,7 @@ export async function convertMemberToManagedByIdp({
 
   if (!memberToUpdate) {
     throw new Error(
-      "Tried to update a member that does not exist in the organization"
+      "Tried to update a member that does not exist in the organization",
     );
   }
 
@@ -550,7 +550,7 @@ export async function acceptInvite(key: string, userId: string) {
   // If member is already in the org, skip so they don't get added to organization.members a second time causing duplicates.
   if (organization.members.find((m) => m.id === userId)) {
     throw new Error(
-      "Whoops! You're already a user, you can't accept a new invitation."
+      "Whoops! You're already a user, you can't accept a new invitation.",
     );
   }
 
@@ -563,7 +563,7 @@ export async function acceptInvite(key: string, userId: string) {
   const invites = organization.invites.filter((invite) => invite.key !== key);
   // Remove from pending members
   const pendingMembers = (organization?.pendingMembers || []).filter(
-    (m) => m.id !== userId
+    (m) => m.id !== userId,
   );
 
   // Add to member list
@@ -616,7 +616,7 @@ export async function inviteUser({
     return {
       emailSent: true,
       inviteUrl: getInviteUrl(
-        organization.invites.filter((invite) => invite.email === email)[0].key
+        organization.invites.filter((invite) => invite.email === email)[0].key,
       ),
     };
   }
@@ -665,7 +665,7 @@ export async function inviteUser({
     updatedOrganization,
     getUserCodesForOrg,
     getLicenseMetaData,
-    true
+    true,
   );
 
   let emailSent = false;
@@ -688,7 +688,7 @@ export async function inviteUser({
 function validateId(id: string) {
   if (!id.match(/^[a-zA-Z_][a-zA-Z0-9_-]*$/)) {
     throw new Error(
-      "Invalid id (must be only alphanumeric plus underscores and hyphens)"
+      "Invalid id (must be only alphanumeric plus underscores and hyphens)",
     );
   }
 }
@@ -751,7 +751,7 @@ function validateConfig(context: ReqContext, config: ConfigFile) {
         }
         if (!datasourceIds.includes(dimension.datasource)) {
           throw new Error(
-            "Unknown datasource id '" + dimension.datasource + "'"
+            "Unknown datasource id '" + dimension.datasource + "'",
           );
         }
         if (!dimension.sql) {
@@ -768,7 +768,7 @@ function validateConfig(context: ReqContext, config: ConfigFile) {
 
 export async function importConfig(
   context: ReqContext | ApiReqContext,
-  config: ConfigFile
+  config: ConfigFile,
 ) {
   const organization = context.org;
   const errors = validateConfig(context, config);
@@ -833,13 +833,13 @@ export async function importConfig(
               ds.params,
               ds.settings || {},
               k,
-              ds.description
+              ds.description,
             );
           }
         } catch (e) {
           throw new Error(`Datasource ${k}: ${e.message}`);
         }
-      })
+      }),
     );
   }
   if (config.metrics) {
@@ -876,7 +876,7 @@ export async function importConfig(
         } catch (e) {
           throw new Error(`Metric ${k}: ${e.message}`);
         }
-      })
+      }),
     );
   }
   if (config.dimensions) {
@@ -910,7 +910,7 @@ export async function importConfig(
         } catch (e) {
           throw new Error(`Dimension ${k}: ${e.message}`);
         }
-      })
+      }),
     );
   }
 
@@ -943,14 +943,14 @@ export async function importConfig(
         } catch (e) {
           throw new Error(`Segment ${k}: ${e.message}`);
         }
-      })
+      }),
     );
   }
 }
 
 export async function getExperimentOverrides(
   context: ReqContext | ApiReqContext,
-  project?: string
+  project?: string,
 ) {
   const experiments = await getAllExperiments(context, { project });
   const overrides: Record<string, ExperimentOverride> = {};
@@ -1022,7 +1022,7 @@ export function isEnterpriseSSO(connection?: SSOConnectionInterface) {
 
 // Auto-add user to an organization if using Enterprise SSO
 export async function addMemberFromSSOConnection(
-  req: AuthRequest
+  req: AuthRequest,
 ): Promise<OrganizationInterface | null> {
   if (!req.userId) return null;
 
@@ -1049,9 +1049,8 @@ export async function addMemberFromSSOConnection(
       if (!installationId) return null;
       if (installationId !== req.vercelInstallationId) return null;
 
-      const installation = await findVercelInstallationByInstallationId(
-        installationId
-      );
+      const installation =
+        await findVercelInstallationByInstallationId(installationId);
       if (!installation) {
         return null;
       }
@@ -1069,7 +1068,7 @@ export async function addMemberFromSSOConnection(
     // Sanity check in case there are multiple orgs for whatever reason
     if (orgs.length > 1) {
       req.log.error(
-        "Expected a single organization for self-hosted GrowthBook"
+        "Expected a single organization for self-hosted GrowthBook",
       );
       return null;
     }
@@ -1097,7 +1096,7 @@ export async function addMemberFromSSOConnection(
       req.name || "",
       req.email || "",
       organization.name,
-      organization.ownerEmail
+      organization.ownerEmail,
     );
   } catch (e) {
     req.log.error(e, "Failed to send new member email");
@@ -1143,7 +1142,7 @@ const EXPANDED_MEMBER_CACHE_TTL = 1000 * 60 * 15; // 15 minutes
 // Add email/name to the organization members array
 export async function expandOrgMembers(
   members: Member[],
-  currentUserId?: string
+  currentUserId?: string,
 ): Promise<ExpandedMember[]> {
   const expandedMembers: ExpandedMember[] = [];
 
@@ -1196,7 +1195,7 @@ export async function expandOrgMembers(
 }
 
 export function getContextForAgendaJobByOrgObject(
-  organization: OrganizationInterface
+  organization: OrganizationInterface,
 ): ApiReqContext {
   return new ReqContextClass({
     org: organization,
@@ -1207,7 +1206,7 @@ export function getContextForAgendaJobByOrgObject(
 }
 
 export async function getContextForAgendaJobByOrgId(
-  orgId: string
+  orgId: string,
 ): Promise<ApiReqContext> {
   const organization = await findOrganizationById(orgId);
 
