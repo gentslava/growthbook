@@ -84,16 +84,16 @@ export interface paths {
   "/segments": {
     /** Get all segments */
     get: operations["listSegments"];
+    /** Create a single segment */
+    post: operations["postSegment"];
   };
   "/segments/{id}": {
     /** Get a single segment */
     get: operations["getSegment"];
-    parameters: {
-        /** @description The id of the requested resource */
-      path: {
-        id: string;
-      };
-    };
+    /** Update a single segment */
+    post: operations["updateSegment"];
+    /** Deletes a single segment */
+    delete: operations["deleteSegment"];
   };
   "/sdk-connections": {
     /** Get all sdk connections */
@@ -353,6 +353,10 @@ export interface paths {
     /** Get a single query */
     get: operations["getQuery"];
   };
+  "/settings": {
+    /** Get organization settings */
+    get: operations["getSettings"];
+  };
 }
 
 export type webhooks = Record<string, never>;
@@ -525,13 +529,20 @@ export interface components {
       datasourceId: string;
       identifierType: string;
       name: string;
+      description?: string;
       query?: string;
       dateCreated: string;
       dateUpdated: string;
+      /**
+       * @description Where this segment must be managed from. If not set (empty string), it can be managed from anywhere. 
+       * @enum {string}
+       */
+      managedBy?: "" | "api" | "config";
       /** @enum {unknown} */
       type?: "SQL" | "FACT";
       factTableId?: string;
       filters?: (string)[];
+      projects?: (string)[];
     };
     /**
      * @description An array of schedule rules to turn on/off a feature rule at specific times. The array must contain exactly 2 elements (start rule and end rule). The first element is the start rule. 
@@ -3365,6 +3376,7 @@ export interface components {
       datasource: string;
       userIdTypes: (string)[];
       sql: string;
+      archived?: boolean;
       /**
        * @description Where this fact table must be managed from. If not set (empty string), it can be managed from anywhere. 
        * @enum {string}
@@ -3479,6 +3491,7 @@ export interface components {
       dateCreated: string;
       /** Format: date-time */
       dateUpdated: string;
+      archived?: boolean;
     };
     Member: {
       id: string;
@@ -3528,6 +3541,71 @@ export interface components {
       externalId: string;
       dependencies: (string)[];
       runAtEnd: boolean;
+    };
+    Settings: {
+      confidenceLevel: number | null;
+      northStar: {
+        title?: string;
+        metricIds?: (string)[];
+      } | null;
+      metricDefaults: {
+        priorSettings?: {
+          override: boolean;
+          proper: boolean;
+          mean: number;
+          stddev: number;
+        };
+        minimumSampleSize?: number;
+        maxPercentageChange?: number;
+        minPercentageChange?: number;
+        targetMDE?: number;
+      } | null;
+      pastExperimentsMinLength: number | null;
+      metricAnalysisDays: number;
+      updateSchedule: ({
+        /** @enum {string} */
+        type?: "cron" | "never" | "stale";
+        cron?: string | null;
+        hours?: number | null;
+      }) | null;
+      multipleExposureMinPercent: number;
+      defaultRole: {
+        role?: string;
+        limitAccessByEnvironment?: boolean;
+        environments?: (string)[];
+      };
+      statsEngine: string | null;
+      pValueThreshold: number;
+      regressionAdjustmentEnabled: boolean;
+      regressionAdjustmentDays: number;
+      sequentialTestingEnabled: boolean;
+      sequentialTestingTuningParameter: number;
+      /** @enum {string} */
+      attributionModel: "firstExposure" | "experimentDuration";
+      targetMDE: number | null;
+      delayHours: number | null;
+      windowType: string | null;
+      windowHours: number | null;
+      winRisk: number | null;
+      loseRisk: number | null;
+      secureAttributeSalt: string;
+      killswitchConfirmation: boolean;
+      requireReviews: ({
+          requireReviewOn?: boolean;
+          resetReviewOnChange?: boolean;
+          environments?: (string)[];
+          projects?: (string)[];
+        })[];
+      featureKeyExample: string;
+      featureRegexValidator: string;
+      banditScheduleValue: number;
+      /** @enum {string} */
+      banditScheduleUnit: "hours" | "days";
+      banditBurnInValue: number;
+      /** @enum {string} */
+      banditBurnInUnit: "hours" | "days";
+      experimentMinLengthDays: number;
+      experimentMaxLengthDays?: number | null;
     };
     CodeRef: {
       /** @description The organization name */
@@ -8126,13 +8204,20 @@ export interface operations {
                 datasourceId: string;
                 identifierType: string;
                 name: string;
+                description?: string;
                 query?: string;
                 dateCreated: string;
                 dateUpdated: string;
+                /**
+                 * @description Where this segment must be managed from. If not set (empty string), it can be managed from anywhere. 
+                 * @enum {string}
+                 */
+                managedBy?: "" | "api" | "config";
                 /** @enum {unknown} */
                 type?: "SQL" | "FACT";
                 factTableId?: string;
                 filters?: (string)[];
+                projects?: (string)[];
               })[];
           }) & {
             limit: number;
@@ -8146,8 +8231,42 @@ export interface operations {
       };
     };
   };
-  getSegment: {
-    /** Get a single segment */
+  postSegment: {
+    /** Create a single segment */
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @description Name of the segment */
+          name: string;
+          /** @description Owner of the segment */
+          owner?: string;
+          /** @description Description of the segment */
+          description?: string;
+          /** @description ID of the datasource this segment belongs to */
+          datasourceId: string;
+          /** @description Type of identifier (user, anonymous, etc.) */
+          identifierType: string;
+          /** @description List of project IDs for projects that can access this segment */
+          projects?: (string)[];
+          /**
+           * @description Where this Segment must be managed from. If not set (empty string), it can be managed from anywhere. 
+           * @enum {string}
+           */
+          managedBy?: "" | "api";
+          /**
+           * @description GrowthBook supports two types of Segments, SQL and FACT. SQL segments are defined by a SQL query, and FACT segments are defined by a fact table and filters. 
+           * @enum {string}
+           */
+          type: "SQL" | "FACT";
+          /** @description SQL query that defines the Segment. This is required for SQL segments. */
+          query?: string;
+          /** @description ID of the fact table this segment belongs to. This is required for FACT segments. */
+          factTableId?: string;
+          /** @description Optional array of fact table filter ids that can further define the Fact Table based Segment. */
+          filters?: (string)[];
+        };
+      };
+    };
     responses: {
       200: {
         content: {
@@ -8158,14 +8277,153 @@ export interface operations {
               datasourceId: string;
               identifierType: string;
               name: string;
+              description?: string;
               query?: string;
               dateCreated: string;
               dateUpdated: string;
+              /**
+               * @description Where this segment must be managed from. If not set (empty string), it can be managed from anywhere. 
+               * @enum {string}
+               */
+              managedBy?: "" | "api" | "config";
               /** @enum {unknown} */
               type?: "SQL" | "FACT";
               factTableId?: string;
               filters?: (string)[];
+              projects?: (string)[];
             };
+          };
+        };
+      };
+    };
+  };
+  getSegment: {
+    /** Get a single segment */
+    parameters: {
+        /** @description The id of the requested resource */
+      path: {
+        id: string;
+      };
+    };
+    responses: {
+      200: {
+        content: {
+          "application/json": {
+            segment: {
+              id: string;
+              owner: string;
+              datasourceId: string;
+              identifierType: string;
+              name: string;
+              description?: string;
+              query?: string;
+              dateCreated: string;
+              dateUpdated: string;
+              /**
+               * @description Where this segment must be managed from. If not set (empty string), it can be managed from anywhere. 
+               * @enum {string}
+               */
+              managedBy?: "" | "api" | "config";
+              /** @enum {unknown} */
+              type?: "SQL" | "FACT";
+              factTableId?: string;
+              filters?: (string)[];
+              projects?: (string)[];
+            };
+          };
+        };
+      };
+    };
+  };
+  updateSegment: {
+    /** Update a single segment */
+    parameters: {
+        /** @description The id of the requested resource */
+      path: {
+        id: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @description Name of the segment */
+          name?: string;
+          /** @description Description of the segment */
+          description?: string;
+          /** @description Owner of the segment */
+          owner?: string;
+          /** @description ID of the datasource this segment belongs to */
+          datasourceId?: string;
+          /** @description Type of identifier (user, anonymous, etc.) */
+          identifierType?: string;
+          /** @description List of project IDs for projects that can access this segment */
+          projects?: (string)[];
+          /**
+           * @description Where this Segment must be managed from. If not set (empty string), it can be managed from anywhere. 
+           * @enum {string}
+           */
+          managedBy?: "" | "api";
+          /**
+           * @description GrowthBook supports two types of Segments, SQL and FACT. SQL segments are defined by a SQL query, and FACT segments are defined by a fact table and filters. 
+           * @enum {string}
+           */
+          type?: "SQL" | "FACT";
+          /** @description SQL query that defines the Segment. This is required for SQL segments. */
+          query?: string;
+          /** @description ID of the fact table this segment belongs to. This is required for FACT segments. */
+          factTableId?: string;
+          /** @description Optional array of fact table filter ids that can further define the Fact Table based Segment. */
+          filters?: (string)[];
+        };
+      };
+    };
+    responses: {
+      200: {
+        content: {
+          "application/json": {
+            segment: {
+              id: string;
+              owner: string;
+              datasourceId: string;
+              identifierType: string;
+              name: string;
+              description?: string;
+              query?: string;
+              dateCreated: string;
+              dateUpdated: string;
+              /**
+               * @description Where this segment must be managed from. If not set (empty string), it can be managed from anywhere. 
+               * @enum {string}
+               */
+              managedBy?: "" | "api" | "config";
+              /** @enum {unknown} */
+              type?: "SQL" | "FACT";
+              factTableId?: string;
+              filters?: (string)[];
+              projects?: (string)[];
+            };
+          };
+        };
+      };
+    };
+  };
+  deleteSegment: {
+    /** Deletes a single segment */
+    parameters: {
+        /** @description The id of the requested resource */
+      path: {
+        id: string;
+      };
+    };
+    responses: {
+      200: {
+        content: {
+          "application/json": {
+            /**
+             * @description The ID of the deleted segment 
+             * @example seg_123abc
+             */
+            deletedId: string;
           };
         };
       };
@@ -11518,6 +11776,7 @@ export interface operations {
                 datasource: string;
                 userIdTypes: (string)[];
                 sql: string;
+                archived?: boolean;
                 /**
                  * @description Where this fact table must be managed from. If not set (empty string), it can be managed from anywhere. 
                  * @enum {string}
@@ -11582,6 +11841,7 @@ export interface operations {
               datasource: string;
               userIdTypes: (string)[];
               sql: string;
+              archived?: boolean;
               /**
                * @description Where this fact table must be managed from. If not set (empty string), it can be managed from anywhere. 
                * @enum {string}
@@ -11619,6 +11879,7 @@ export interface operations {
               datasource: string;
               userIdTypes: (string)[];
               sql: string;
+              archived?: boolean;
               /**
                * @description Where this fact table must be managed from. If not set (empty string), it can be managed from anywhere. 
                * @enum {string}
@@ -11663,6 +11924,7 @@ export interface operations {
            * @enum {string}
            */
           managedBy?: "" | "api";
+          archived?: boolean;
         };
       };
     };
@@ -11680,6 +11942,7 @@ export interface operations {
               datasource: string;
               userIdTypes: (string)[];
               sql: string;
+              archived?: boolean;
               /**
                * @description Where this fact table must be managed from. If not set (empty string), it can be managed from anywhere. 
                * @enum {string}
@@ -12033,6 +12296,7 @@ export interface operations {
                 dateCreated: string;
                 /** Format: date-time */
                 dateUpdated: string;
+                archived?: boolean;
               })[];
           }) & {
             limit: number;
@@ -12267,6 +12531,7 @@ export interface operations {
               dateCreated: string;
               /** Format: date-time */
               dateUpdated: string;
+              archived?: boolean;
             };
           };
         };
@@ -12374,6 +12639,7 @@ export interface operations {
               dateCreated: string;
               /** Format: date-time */
               dateUpdated: string;
+              archived?: boolean;
             };
           };
         };
@@ -12499,6 +12765,7 @@ export interface operations {
            * @enum {string}
            */
           managedBy?: "" | "api";
+          archived?: boolean;
         };
       };
     };
@@ -12595,6 +12862,7 @@ export interface operations {
               dateCreated: string;
               /** Format: date-time */
               dateUpdated: string;
+              archived?: boolean;
             };
           };
         };
@@ -12987,6 +13255,82 @@ export interface operations {
       };
     };
   };
+  getSettings: {
+    /** Get organization settings */
+    responses: {
+      200: {
+        content: {
+          "application/json": {
+            settings: {
+              confidenceLevel: number | null;
+              northStar: {
+                title?: string;
+                metricIds?: (string)[];
+              } | null;
+              metricDefaults: {
+                priorSettings?: {
+                  override: boolean;
+                  proper: boolean;
+                  mean: number;
+                  stddev: number;
+                };
+                minimumSampleSize?: number;
+                maxPercentageChange?: number;
+                minPercentageChange?: number;
+                targetMDE?: number;
+              } | null;
+              pastExperimentsMinLength: number | null;
+              metricAnalysisDays: number;
+              updateSchedule: ({
+                /** @enum {string} */
+                type?: "cron" | "never" | "stale";
+                cron?: string | null;
+                hours?: number | null;
+              }) | null;
+              multipleExposureMinPercent: number;
+              defaultRole: {
+                role?: string;
+                limitAccessByEnvironment?: boolean;
+                environments?: (string)[];
+              };
+              statsEngine: string | null;
+              pValueThreshold: number;
+              regressionAdjustmentEnabled: boolean;
+              regressionAdjustmentDays: number;
+              sequentialTestingEnabled: boolean;
+              sequentialTestingTuningParameter: number;
+              /** @enum {string} */
+              attributionModel: "firstExposure" | "experimentDuration";
+              targetMDE: number | null;
+              delayHours: number | null;
+              windowType: string | null;
+              windowHours: number | null;
+              winRisk: number | null;
+              loseRisk: number | null;
+              secureAttributeSalt: string;
+              killswitchConfirmation: boolean;
+              requireReviews: ({
+                  requireReviewOn?: boolean;
+                  resetReviewOnChange?: boolean;
+                  environments?: (string)[];
+                  projects?: (string)[];
+                })[];
+              featureKeyExample: string;
+              featureRegexValidator: string;
+              banditScheduleValue: number;
+              /** @enum {string} */
+              banditScheduleUnit: "hours" | "days";
+              banditBurnInValue: number;
+              /** @enum {string} */
+              banditBurnInUnit: "hours" | "days";
+              experimentMinLengthDays: number;
+              experimentMaxLengthDays?: number | null;
+            };
+          };
+        };
+      };
+    };
+  };
 }
 import { z } from "zod";
 import * as openApiValidators from "back-end/src/validators/openapi";
@@ -13029,6 +13373,7 @@ export type ApiFactMetric = z.infer<typeof openApiValidators.apiFactMetricValida
 export type ApiMember = z.infer<typeof openApiValidators.apiMemberValidator>;
 export type ApiArchetype = z.infer<typeof openApiValidators.apiArchetypeValidator>;
 export type ApiQuery = z.infer<typeof openApiValidators.apiQueryValidator>;
+export type ApiSettings = z.infer<typeof openApiValidators.apiSettingsValidator>;
 export type ApiCodeRef = z.infer<typeof openApiValidators.apiCodeRefValidator>;
 
 // Operations
@@ -13052,7 +13397,10 @@ export type GetDimensionResponse = operations["getDimension"]["responses"]["200"
 export type UpdateDimensionResponse = operations["updateDimension"]["responses"]["200"]["content"]["application/json"];
 export type DeleteDimensionResponse = operations["deleteDimension"]["responses"]["200"]["content"]["application/json"];
 export type ListSegmentsResponse = operations["listSegments"]["responses"]["200"]["content"]["application/json"];
+export type PostSegmentResponse = operations["postSegment"]["responses"]["200"]["content"]["application/json"];
 export type GetSegmentResponse = operations["getSegment"]["responses"]["200"]["content"]["application/json"];
+export type UpdateSegmentResponse = operations["updateSegment"]["responses"]["200"]["content"]["application/json"];
+export type DeleteSegmentResponse = operations["deleteSegment"]["responses"]["200"]["content"]["application/json"];
 export type ListSdkConnectionsResponse = operations["listSdkConnections"]["responses"]["200"]["content"]["application/json"];
 export type PostSdkConnectionResponse = operations["postSdkConnection"]["responses"]["200"]["content"]["application/json"];
 export type GetSdkConnectionResponse = operations["getSdkConnection"]["responses"]["200"]["content"]["application/json"];
@@ -13123,3 +13471,4 @@ export type ListCodeRefsResponse = operations["listCodeRefs"]["responses"]["200"
 export type PostCodeRefsResponse = operations["postCodeRefs"]["responses"]["200"]["content"]["application/json"];
 export type GetCodeRefsResponse = operations["getCodeRefs"]["responses"]["200"]["content"]["application/json"];
 export type GetQueryResponse = operations["getQuery"]["responses"]["200"]["content"]["application/json"];
+export type GetSettingsResponse = operations["getSettings"]["responses"]["200"]["content"]["application/json"];
