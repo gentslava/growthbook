@@ -17,6 +17,7 @@ import {
 import { getScopedSettings } from "shared/settings";
 import { v4 as uuidv4 } from "uuid";
 import uniq from "lodash/uniq";
+import { getMetricMap } from "back-end/src/models/MetricModel";
 import { DataSourceInterface } from "back-end/types/datasource";
 import {
   AuthRequest,
@@ -91,7 +92,6 @@ import {
   ExperimentType,
   Variation,
 } from "back-end/types/experiment";
-import { getMetricMap } from "back-end/src/models/MetricModel";
 import { IdeaModel } from "back-end/src/models/IdeasModel";
 import { IdeaInterface } from "back-end/types/idea";
 import { getDataSourceById } from "back-end/src/models/DataSourceModel";
@@ -133,7 +133,7 @@ import {
   generateEmbeddings,
   secondsUntilAICanBeUsedAgain,
   simpleCompletion,
-} from "back-end/src/enterprise/services/openai";
+} from "back-end/src/enterprise/services/providerAI";
 
 export const SNAPSHOT_TIMEOUT = 30 * 60 * 1000;
 
@@ -214,7 +214,7 @@ export async function postAIExperimentAnalysis(
     });
   }
 
-  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context.org);
+  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context);
   if (secondsUntilReset > 0) {
     return res.status(429).json({
       status: 429,
@@ -404,7 +404,7 @@ export async function postSimilarExperiments(
       message: "AI configuration not set or enabled",
     });
   }
-  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context.org);
+  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context);
   if (secondsUntilReset > 0) {
     return res.status(429).json({
       status: 429,
@@ -485,7 +485,7 @@ export async function postSimilarExperiments(
     context,
     input: [newExperimentText],
   });
-  const newEmbedding = newExperimentEmbeddingResponse.data[0].embedding;
+  const newEmbedding = newExperimentEmbeddingResponse[0].embedding;
   // Call to calculate cosine similarity between the new experiment and existing experiments: cosineSimilarity
   const similarities = experimentsToSearch
     .map((exp) => {
@@ -544,7 +544,7 @@ export async function postRegenerateEmbeddings(
       message: "AI configuration not set or enabled",
     });
   }
-  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context.org);
+  const secondsUntilReset = await secondsUntilAICanBeUsedAgain(context);
   if (secondsUntilReset > 0) {
     return res.status(429).json({
       status: 429,
@@ -1371,7 +1371,11 @@ export async function postExperiment(
     validateVariationIds(data.variations);
   }
 
-  if (data.holdoutId !== experiment.holdoutId && experiment.holdoutId) {
+  if (
+    data.holdoutId &&
+    data.holdoutId !== experiment.holdoutId &&
+    experiment.holdoutId
+  ) {
     if (
       experiment.status !== "draft" ||
       experiment.hasURLRedirects ||
@@ -1399,6 +1403,19 @@ export async function postExperiment(
         [experiment.id]: { id: experiment.id, dateAdded: new Date() },
       },
     });
+  }
+
+  if (data.defaultDashboardId) {
+    const dashboard = await context.models.dashboards.getById(
+      data.defaultDashboardId,
+    );
+    if (!dashboard) {
+      res.status(403).json({
+        status: 403,
+        message: "Invalid dashboard: " + data.defaultDashboardId,
+      });
+      return;
+    }
   }
 
   const keys: (keyof ExperimentInterface)[] = [
@@ -1456,6 +1473,8 @@ export async function postExperiment(
     "analysisSummary",
     "dismissedWarnings",
     "holdoutId",
+    "defaultDashboardId",
+    "pinnedMetricDimensionLevels",
   ];
   let changes: Changeset = {};
 
@@ -2640,16 +2659,19 @@ export async function deleteExperiment(
     removeExperimentFromPresentations(experiment.id),
   ];
 
+  await Promise.all(promises);
+
   if (experiment.holdoutId) {
-    promises.push(
-      context.models.holdout.removeExperimentFromHoldout(
+    try {
+      await context.models.holdout.removeExperimentFromHoldout(
         experiment.holdoutId,
         experiment.id,
-      ),
-    );
+      );
+    } catch (e) {
+      // This is not a fatal error, so don't block the request from happening
+      logger.warn(e, "Error removing experiment from holdout");
+    }
   }
-
-  await Promise.all(promises);
 
   await req.audit({
     event: "experiment.delete",
@@ -2775,9 +2797,12 @@ export async function createExperimentSnapshot({
   const statsEngine = settings.statsEngine.value;
 
   const metricMap = await getMetricMap(context);
+  const factTableMap = await getFactTableMap(context);
+
   const metricIds = getAllMetricIdsFromExperiment(experiment, false);
 
   const allExperimentMetrics = metricIds.map((m) => metricMap.get(m) || null);
+
   const denominatorMetricIds = uniq<string>(
     allExperimentMetrics
       .map((m) => m?.denominator)
@@ -2805,8 +2830,6 @@ export async function createExperimentSnapshot({
     regressionAdjustmentEnabled,
     dimension,
   );
-
-  const factTableMap = await getFactTableMap(context);
 
   const queryRunner = await createSnapshot({
     experiment,

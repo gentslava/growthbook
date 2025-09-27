@@ -17,6 +17,8 @@ import {
   isBinomialMetric,
   getDelayWindowHours,
   getColumnExpression,
+  isCappableMetricType,
+  parseDimensionMetricId,
 } from "shared/experiments";
 import {
   AUTOMATIC_DIMENSION_OTHER_NAME,
@@ -86,6 +88,9 @@ import {
   PopulationFactMetricsQueryParams,
   VariationPeriodWeight,
   DimensionColumnData,
+  DataType,
+  UserExperimentExposuresQueryParams,
+  UserExperimentExposuresQueryResponse,
 } from "back-end/src/types/Integration";
 import { DimensionInterface } from "back-end/types/dimension";
 import { SegmentInterface } from "back-end/types/segment";
@@ -368,6 +373,9 @@ export default abstract class SqlIntegration
       ${experimentQueries
         .map((q, i) => {
           const hasNameCol = q.hasNameCol || false;
+          const userCountColumn = this.hasCountDistinctHLL()
+            ? this.hllCardinality(this.hllAggregate(q.userIdType))
+            : `COUNT(distinct ${q.userIdType})`;
           return `
         __exposures${i} as (
           SELECT 
@@ -383,7 +391,7 @@ export default abstract class SqlIntegration
                 : this.castToString("variation_id")
             } as variation_name,
             ${this.dateTrunc(this.castUserDateCol("timestamp"))} as date,
-            count(distinct ${q.userIdType}) as users,
+            ${userCountColumn} as users,
             MAX(${this.castUserDateCol("timestamp")}) as latest_data
           FROM
             (
@@ -395,6 +403,8 @@ export default abstract class SqlIntegration
             AND SUBSTRING(experiment_id, 1, ${
               SAFE_ROLLOUT_TRACKING_KEY_PREFIX.length
             }) != '${SAFE_ROLLOUT_TRACKING_KEY_PREFIX}'
+            AND experiment_id IS NOT NULL
+            AND variation_id IS NOT NULL
           GROUP BY
             experiment_id,
             variation_id,
@@ -1785,18 +1795,30 @@ export default abstract class SqlIntegration
     return "";
   }
 
-  getExperimentUnitsTableQuery(params: ExperimentUnitsQueryParams): string {
+  getExperimentUnitsTableQueryFromCte(
+    unitsTableFullName: string,
+    cteSql: string,
+  ): string {
     return format(
       `
-    CREATE OR REPLACE TABLE ${params.unitsTableFullName}
+    CREATE OR REPLACE TABLE ${unitsTableFullName}
     ${this.createUnitsTableOptions()}
     AS (
       WITH
-        ${this.getExperimentUnitsQuery(params)}
+        ${cteSql}
       SELECT * FROM __experimentUnits
     );
     `,
       this.getFormatDialect(),
+    );
+  }
+
+  getExperimentUnitsTableQuery(params: ExperimentUnitsQueryParams): string {
+    const cteSql = this.getExperimentUnitsQuery(params);
+
+    return this.getExperimentUnitsTableQueryFromCte(
+      params.unitsTableFullName || "",
+      cteSql,
     );
   }
 
@@ -2392,6 +2414,84 @@ export default abstract class SqlIntegration
     };
   }
 
+  getUserExperimentExposuresQuery(
+    params: UserExperimentExposuresQueryParams,
+  ): string {
+    const { userIdType } = params;
+    // Get all exposure queries that match the specified userIdType
+    const allExposureQueries = (
+      this.datasource.settings.queries?.exposure || []
+    )
+      .map(({ id }) => this.getExposureQuery(id))
+      .filter((query) => query.userIdType === userIdType); // Filter by userIdType
+
+    // Collect all unique dimension names across all exposure queries
+    const allDimensionNames = Array.from(
+      new Set(allExposureQueries.flatMap((query) => query.dimensions || [])),
+    );
+    const startDate = subDays(new Date(), params.lookbackDays);
+
+    return format(
+      `-- User Exposures Query
+      WITH __userExposures AS (
+        ${allExposureQueries
+          .map((exposureQuery, i) => {
+            // Get all available dimensions for this exposure query
+            const availableDimensions = exposureQuery.dimensions || [];
+            const tableAlias = `t${i}`;
+
+            // Create dimension columns for ALL possible dimensions
+            const dimensionSelects = allDimensionNames.map((dim) => {
+              if (availableDimensions.includes(dim)) {
+                return `${this.castToString(`${tableAlias}.${dim}`)} AS ${dim}`;
+              } else {
+                return `${this.castToString("null")} AS ${dim}`;
+              }
+            });
+
+            const dimensionSelectString = dimensionSelects.join(", ");
+
+            return `
+              SELECT timestamp, experiment_id, variation_id, ${dimensionSelectString} FROM (
+                ${compileSqlTemplate(exposureQuery.query, {
+                  startDate: startDate,
+                })}
+              ) ${tableAlias}
+              WHERE ${this.castToString(exposureQuery.userIdType)} = '${params.unitId}' AND timestamp >= ${this.toTimestamp(startDate)}
+            `;
+          })
+          .join("\nUNION ALL\n")}
+      )
+      SELECT * FROM __userExposures 
+      ORDER BY timestamp DESC 
+      LIMIT ${SQL_ROW_LIMIT}
+      `,
+      this.getFormatDialect(),
+    );
+  }
+
+  public async runUserExperimentExposuresQuery(
+    query: string,
+  ): Promise<UserExperimentExposuresQueryResponse> {
+    const { rows, statistics } = await this.runQuery(query);
+
+    // Check if SQL_ROW_LIMIT was reached
+    const truncated = rows.length === SQL_ROW_LIMIT;
+
+    return {
+      rows: rows.map((row) => {
+        return {
+          timestamp: row.timestamp,
+          experiment_id: row.experiment_id,
+          variation_id: row.variation_id,
+          ...row,
+        };
+      }),
+      statistics,
+      truncated,
+    };
+  }
+
   private getMetricData(
     metric: ExperimentMetricInterface,
     settings: Pick<
@@ -2426,7 +2526,8 @@ export default abstract class SqlIntegration
       metric.cappingSettings.type === "percentile" &&
       !!metric.cappingSettings.value &&
       metric.cappingSettings.value < 1 &&
-      !quantileMetric;
+      isCappableMetricType(metric);
+
     const capCoalesceMetric = this.capCoalesceValue({
       valueCol: `m.${alias}_value`,
       metric,
@@ -3190,14 +3291,14 @@ export default abstract class SqlIntegration
       metric.cappingSettings.type === "percentile" &&
       !!metric.cappingSettings.value &&
       metric.cappingSettings.value < 1 &&
-      !quantileMetric;
+      isCappableMetricType(metric);
 
     const denominatorIsPercentileCapped =
       denominator &&
       denominator.cappingSettings.type === "percentile" &&
       !!denominator.cappingSettings.value &&
       denominator.cappingSettings.value < 1 &&
-      !quantileMetric;
+      isCappableMetricType(denominator);
     const capCoalesceMetric = this.capCoalesceValue({
       valueCol: "m.value",
       metric,
@@ -4048,10 +4149,12 @@ export default abstract class SqlIntegration
     capValueCol?: string;
     columnRef?: ColumnRef | null;
   }): string {
+    // Assumes cappable metrics do not have aggregate filters
+    // which is true for now
     if (
       metric?.cappingSettings.type === "absolute" &&
       metric.cappingSettings.value &&
-      !quantileMetricType(metric)
+      isCappableMetricType(metric)
     ) {
       return `LEAST(
         ${this.ensureFloat(`COALESCE(${valueCol}, 0)`)},
@@ -4062,7 +4165,7 @@ export default abstract class SqlIntegration
       metric?.cappingSettings.type === "percentile" &&
       metric.cappingSettings.value &&
       metric.cappingSettings.value < 1 &&
-      !quantileMetricType(metric)
+      isCappableMetricType(metric)
     ) {
       return `LEAST(
         ${this.ensureFloat(`COALESCE(${valueCol}, 0)`)},
@@ -4603,13 +4706,14 @@ export default abstract class SqlIntegration
     factTable,
     column,
     limit = 50,
+    lookbackDays = 14,
   }: ColumnTopValuesParams) {
     if (column.datatype !== "string") {
       throw new Error(`Column ${column.column} is not a string column`);
     }
 
     const start = new Date();
-    start.setDate(start.getDate() - 7);
+    start.setDate(start.getDate() - lookbackDays);
 
     return format(
       `
@@ -4728,11 +4832,14 @@ ${this.selectStarLimit("__topValues ORDER BY count DESC", limit)}
 
       // Numerator column
       const value = this.getMetricColumns(m, factTableMap, "m", false).value;
+      const dimensionInfo = parseDimensionMetricId(m.id);
       const filters = getColumnRefWhereClause(
         factTable,
         m.numerator,
         this.escapeStringLiteral.bind(this),
         this.extractJSONField.bind(this),
+        false,
+        dimensionInfo,
       );
 
       const column =
@@ -4759,11 +4866,14 @@ ${this.selectStarLimit("__topValues ORDER BY count DESC", limit)}
         }
 
         const value = this.getMetricColumns(m, factTableMap, "m", true).value;
+        const dimensionInfo = parseDimensionMetricId(m.id);
         const filters = getColumnRefWhereClause(
           factTable,
           m.denominator,
           this.escapeStringLiteral.bind(this),
           this.extractJSONField.bind(this),
+          false,
+          dimensionInfo,
         );
         const column =
           filters.length > 0
@@ -4965,11 +5075,14 @@ ${this.selectStarLimit("__topValues ORDER BY count DESC", limit)}
 
     // Add filters from the Metric
     if (isFact && factTable && columnRef) {
+      const dimensionInfo = parseDimensionMetricId(metric.id);
       getColumnRefWhereClause(
         factTable,
         columnRef,
         this.escapeStringLiteral.bind(this),
         this.extractJSONField.bind(this),
+        false,
+        dimensionInfo,
       ).forEach((filterSQL) => {
         where.push(filterSQL);
       });
@@ -5162,7 +5275,7 @@ ${this.selectStarLimit("__topValues ORDER BY count DESC", limit)}
         endDate,
         overrideConversionWindows,
       )}
-        ${metricQuantileSettings?.ignoreZeros ? `AND ${col} != 0` : ""}
+        ${metricQuantileSettings?.ignoreZeros && metricQuantileSettings?.type === "event" ? `AND ${col} != 0` : ""}
       `,
       `${col}`,
       `NULL`,
@@ -5197,13 +5310,18 @@ ${this.selectStarLimit("__topValues ORDER BY count DESC", limit)}
         ? columnRef?.aggregateFilterColumn
         : columnRef?.column;
 
+      const nullIfZero =
+        metric.quantileSettings?.ignoreZeros &&
+        metric.quantileSettings?.type === "unit";
+
       if (
         !hasAggregateFilter &&
         (isBinomialMetric(metric) || column === "$$distinctUsers")
       ) {
         return `COALESCE(MAX(${valueColumn}), 0)`;
       } else if (column === "$$count") {
-        return `COUNT(${valueColumn})`;
+        const aggColumn = `COUNT(${valueColumn})`;
+        return nullIfZero ? `NULLIF(${aggColumn}, 0)` : aggColumn;
       } else if (
         metric.metricType === "quantile" &&
         metric.quantileSettings?.type === "event"
@@ -5214,26 +5332,23 @@ ${this.selectStarLimit("__topValues ORDER BY count DESC", limit)}
           "0",
         )})`;
       } else if (
-        metric.metricType === "quantile" &&
-        metric.quantileSettings?.type === "unit" &&
-        metric.quantileSettings?.ignoreZeros
-      ) {
-        return `SUM(${valueColumn})`;
-      } else if (
         !columnRef?.column.startsWith("$$") &&
         columnRef?.aggregation === "count distinct"
       ) {
         if (willReaggregate) {
           return this.hllAggregate(valueColumn);
         }
-        return this.hllCardinality(this.hllAggregate(valueColumn));
+        const aggColumn = this.hllCardinality(this.hllAggregate(valueColumn));
+        return nullIfZero ? `NULLIF(${aggColumn}, 0)` : aggColumn;
       } else if (
         !columnRef?.column.startsWith("$$") &&
         columnRef?.aggregation === "max"
       ) {
-        return `COALESCE(MAX(${valueColumn}), 0)`;
+        const aggColumn = `COALESCE(MAX(${valueColumn}), 0)`;
+        return nullIfZero ? `NULLIF(${aggColumn}, 0)` : aggColumn;
       } else {
-        return `SUM(COALESCE(${valueColumn}, 0))`;
+        const aggColumn = `SUM(COALESCE(${valueColumn}, 0))`;
+        return nullIfZero ? `NULLIF(${aggColumn}, 0)` : aggColumn;
       }
     }
 
@@ -5489,5 +5604,26 @@ ${this.selectStarLimit("__topValues ORDER BY count DESC", limit)}
     }
 
     throw new Error(`Missing identifier join table for '${id1}' and '${id2}'.`);
+  }
+
+  getDataType(dataType: DataType): string {
+    switch (dataType) {
+      case "string":
+        return "VARCHAR";
+      case "integer":
+        return "INTEGER";
+      case "float":
+        return "FLOAT";
+      case "boolean":
+        return "BOOLEAN";
+      case "date":
+        return "DATE";
+      case "timestamp":
+        return "TIMESTAMP";
+      default: {
+        const _: never = dataType;
+        throw new Error(`Unsupported data type: ${dataType}`);
+      }
+    }
   }
 }

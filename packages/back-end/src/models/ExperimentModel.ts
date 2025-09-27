@@ -43,7 +43,11 @@ import {
 import {
   generateEmbeddings,
   simpleCompletion,
-} from "back-end/src/enterprise/services/openai";
+} from "back-end/src/enterprise/services/providerAI";
+import {
+  DiffResult,
+  getObjectDiff,
+} from "back-end/src/events/handlers/webhooks/event-webhooks-utils";
 import { ExperimentInterfaceExcludingHoldouts } from "../validators/experiments";
 import { IdeaDocument } from "./IdeasModel";
 import { addTags } from "./TagModel";
@@ -241,6 +245,7 @@ const experimentSchema = new mongoose.Schema({
           snapshotId: String,
         },
       ],
+      lookbackStartDate: Date,
     },
   ],
   data: String,
@@ -309,6 +314,8 @@ const experimentSchema = new mongoose.Schema({
   },
   dismissedWarnings: [String],
   holdoutId: String,
+  defaultDashboardId: String,
+  pinnedMetricDimensionLevels: [String],
 });
 
 type ExperimentDocument = mongoose.Document & ExperimentInterface;
@@ -943,6 +950,36 @@ export const logExperimentUpdated = async ({
     ? getEnvironmentIdsFromOrg(context.org)
     : [];
 
+  let changes: DiffResult | undefined;
+  try {
+    changes = getObjectDiff(previousApiExperiment, currentApiExperiment, {
+      ignoredKeys: ["dateUpdated"],
+      nestedObjectConfigs: [
+        {
+          key: "phases",
+          idField: "__index",
+          ignoredKeys: [
+            "dateStarted",
+            "dateEnded",
+            "bucketVersion",
+            "minBucketVersion",
+          ],
+        },
+        {
+          key: "variations",
+          idField: "variationId",
+          ignoredKeys: ["screenshots"],
+        },
+        {
+          key: "metricOverrides",
+          idField: "id",
+        },
+      ],
+    });
+  } catch (e) {
+    logger.error(e, "error creating change patch");
+  }
+
   await createEvent({
     context,
     object: "experiment",
@@ -951,6 +988,7 @@ export const logExperimentUpdated = async ({
     data: {
       object: currentApiExperiment,
       previous_object: previousApiExperiment,
+      changes,
     },
     projects: Array.from(
       new Set([previousApiExperiment.project, currentApiExperiment.project]),
@@ -1467,7 +1505,7 @@ export async function generateExperimentEmbeddings(
       // save the embeddings back to the experiment:
       try {
         await context.models.vectors.addOrUpdateExperimentVector(exp.id, {
-          embeddings: embeddings.data[j].embedding,
+          embeddings: embeddings[j].embedding,
         });
       } catch (error) {
         throw new Error("Error updating embeddings");
