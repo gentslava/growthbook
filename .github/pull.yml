@@ -3,6 +3,8 @@ rules:
   - base: master
     upstream: main
     mergeMethod: merge
+    mergeUnstable: true
   - base: main
     upstream: growthbook:main
     mergeMethod: hardreset
+    mergeUnstable: true
