@@ -172,6 +172,8 @@ const GeneralSettingsPage = (): React.ReactElement => {
       ollamaDefaultModel: settings.ollamaDefaultModel || "",
       disableLegacyMetricCreation:
         settings.disableLegacyMetricCreation ?? false,
+      defaultFeatureRulesInAllEnvs:
+        settings.defaultFeatureRulesInAllEnvs ?? false,
     },
   });
   const { apiCall } = useAuth();
@@ -221,6 +223,7 @@ const GeneralSettingsPage = (): React.ReactElement => {
     openAIDefaultModel: form.watch("openAIDefaultModel"),
     ollamaDefaultModel: form.watch("ollamaDefaultModel"),
     disableLegacyMetricCreation: form.watch("disableLegacyMetricCreation"),
+    defaultFeatureRulesInAllEnvs: form.watch("defaultFeatureRulesInAllEnvs"),
   };
   function updateCronString(cron?: string) {
     cron = cron || value.updateSchedule?.cron || "";
