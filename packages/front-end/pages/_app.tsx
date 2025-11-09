@@ -164,9 +164,15 @@ function App({
         }
         body {
           font-family: var(--default-font-family);
+          height: 100vh;
         }
         .radix-themes {
           --default-font-family: ${inter.style.fontFamily};
+        }
+        #__next {
+          height: 100%;
+          overflow: auto;
+          scrollbar-gutter: stable;
         }
       `}</style>
       <Head>
