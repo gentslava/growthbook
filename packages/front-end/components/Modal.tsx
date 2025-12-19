@@ -390,6 +390,7 @@ const Modal: FC<ModalProps> = ({
         display: open ? "block" : "none",
         position: inline ? "relative" : undefined,
         zIndex: inline ? 1 : increasedElevation ? 1550 : undefined,
+        pointerEvents: "none",
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -467,6 +468,7 @@ const Modal: FC<ModalProps> = ({
           "bg-dark": solidOverlay,
         })}
         style={overlayStyle}
+        onClick={close}
       />
       {modalHtml}
     </Portal>
