@@ -21,7 +21,7 @@ import {
   ColumnAggregation,
   FactTableColumnType,
   RowFilter,
-} from "back-end/types/fact-table";
+} from "shared/types/fact-table";
 import {
   canInlineFilterColumn,
   getAggregateFilters,
@@ -29,7 +29,7 @@ import {
   getSelectedColumnDatatype,
 } from "shared/experiments";
 import { PiArrowSquareOut, PiPlus } from "react-icons/pi";
-import { DataSourceInterfaceWithParams } from "back-end/types/datasource";
+import { DataSourceInterfaceWithParams } from "shared/types/datasource";
 import { useGrowthBook } from "@growthbook/growthbook-react";
 import { useDefinitions } from "@/services/DefinitionsContext";
 import {
@@ -52,7 +52,6 @@ import SelectField, {
 import MultiSelectField from "@/components/Forms/MultiSelectField";
 import Field from "@/components/Forms/Field";
 import Switch from "@/ui/Switch";
-import RiskThresholds from "@/components/Metrics/MetricForm/RiskThresholds";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/ui/Tabs";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
 import { GBCuped } from "@/components/Icons";
@@ -69,8 +68,8 @@ import HelperText from "@/ui/HelperText";
 import PaidFeatureBadge from "@/components/GetStarted/PaidFeatureBadge";
 import { useDemoDataSourceProject } from "@/hooks/useDemoDataSourceProject";
 import { RowFilterInput } from "@/components/FactTables/RowFilterInput";
-import { MANAGED_BY_ADMIN } from "../Metrics/MetricForm";
-import { DocLink } from "../DocLink";
+import { MANAGED_BY_ADMIN } from "@/components/Metrics/MetricForm";
+import { DocLink } from "@/components/DocLink";
 
 export interface Props {
   close?: () => void;
@@ -1352,11 +1351,6 @@ export default function FactMetricModal({
 
   const type = form.watch("metricType");
 
-  const riskError =
-    form.watch("loseRisk") < form.watch("winRisk")
-      ? "The acceptable risk percentage cannot be higher than the too risky percentage"
-      : "";
-
   const hasRegressionAdjustmentFeature = hasCommercialFeature(
     "regression-adjustment",
   );
@@ -2485,14 +2479,6 @@ export default function FactMetricModal({
             considered a draw (default ${
               metricDefaults.minPercentageChange * 100
             }%)`}
-                        />
-
-                        <RiskThresholds
-                          winRisk={form.watch("winRisk")}
-                          loseRisk={form.watch("loseRisk")}
-                          winRiskRegisterField={form.register("winRisk")}
-                          loseRiskRegisterField={form.register("loseRisk")}
-                          riskError={riskError}
                         />
                         {type === "ratio" || type === "dailyParticipation" ? (
                           <Box mb="1">

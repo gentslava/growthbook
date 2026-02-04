@@ -16,10 +16,10 @@ import {
   FactTableInterface,
   LegacyColumnRef,
   LegacyFactMetricInterface,
-} from "back-end/types/fact-table";
-import { ApiFactMetric } from "back-end/types/openapi";
+} from "shared/types/fact-table";
+import { ApiFactMetric } from "shared/types/openapi";
 import { DEFAULT_CONVERSION_WINDOW_HOURS } from "back-end/src/util/secrets";
-import { promiseAllChunks } from "../util/promise";
+import { promiseAllChunks } from "back-end/src/util/promise";
 import { MakeModelClass } from "./BaseModel";
 import { getFactTableMap } from "./FactTableModel";
 
@@ -35,6 +35,10 @@ const BaseClass = MakeModelClass({
   },
   globallyUniqueIds: false,
   readonlyFields: ["datasource"],
+  defaultValues: {
+    owner: "",
+    tags: [],
+  },
 });
 
 // extra checks on user filter
@@ -90,7 +94,6 @@ function validateUserFilter({
   }
 }
 
-// Ensure that that
 function denominatorRequiredByMetricType(metricType: FactMetricType): boolean {
   switch (metricType) {
     case "mean":
@@ -256,6 +259,10 @@ export class FactMetricModel extends BaseClass {
         "Cannot delete fact metric managed by API if the request isn't from the API.",
       );
     }
+  }
+
+  protected async afterDelete(doc: FactMetricInterface) {
+    await this.context.models.metricGroups.removeMetricFromAllGroups(doc.id);
   }
 
   // TODO: Once we migrate fact tables to new data model, we can use that instead

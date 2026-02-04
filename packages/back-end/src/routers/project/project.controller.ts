@@ -1,10 +1,10 @@
 import type { Response } from "express";
+import { ProjectInterface, ProjectSettings } from "shared/types/project";
+import { EventUserForResponseLocals } from "shared/types/events/event-types";
 import { stringToBoolean } from "shared/util";
-import { removeProjectFromSavedGroups } from "back-end/src/models/SavedGroupModel";
 import { AuthRequest } from "back-end/src/types/AuthRequest";
 import { ApiErrorResponse } from "back-end/types/api";
 import { getContextFromReq } from "back-end/src/services/organizations";
-import { ProjectInterface, ProjectSettings } from "back-end/types/project";
 import {
   deleteAllDataSourcesForAProject,
   removeProjectFromDatasources,
@@ -26,7 +26,6 @@ import {
   deleteAllSlackIntegrationsForAProject,
   removeProjectFromSlackIntegration,
 } from "back-end/src/models/SlackIntegrationModel";
-import { EventUserForResponseLocals } from "back-end/types/events/event-types";
 import { deleteAllFactTablesForAProject } from "back-end/src/models/FactTableModel";
 
 // region POST /projects
@@ -281,7 +280,7 @@ export const deleteProject = async (
 
   // Clean up saved groups
   try {
-    await removeProjectFromSavedGroups(id, org.id);
+    await context.models.savedGroups.removeProjectIdFromAllGroups(id);
   } catch (e) {
     failedToDeleteResources.push("saved groups");
   }

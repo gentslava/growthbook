@@ -1,4 +1,4 @@
-import { FactMetricType } from "back-end/types/fact-table";
+import { FactMetricType } from "shared/types/fact-table";
 import { EntityEvents } from "shared/types/audit";
 
 export const DEFAULT_STATS_ENGINE = "bayesian" as const;
@@ -33,6 +33,9 @@ export const DEFAULT_REGRESSION_ADJUSTMENT_DAYS = 14;
 export const DEFAULT_SEQUENTIAL_TESTING_ENABLED = false;
 export const DEFAULT_SEQUENTIAL_TESTING_TUNING_PARAMETER = 5000;
 
+// Post-Stratification:
+export const DEFAULT_POST_STRATIFICATION_ENABLED = true;
+
 // Query settings
 export const DEFAULT_TEST_QUERY_DAYS = 30;
 export const DEFAULT_USE_STICKY_BUCKETING = false;
@@ -41,6 +44,9 @@ export const DEFAULT_USE_STICKY_BUCKETING = false;
 export const EXPOSURE_DATE_DIMENSION_NAME = "dim_exposure_date";
 export const BANDIT_SRM_DIMENSION_NAME = "gb_internal_bandit_srm";
 export const AUTOMATIC_DIMENSION_OTHER_NAME = "__Other__";
+export const NULL_DIMENSION_VALUE = "__NULL_DIMENSION";
+export const NULL_DIMENSION_DISPLAY = "NULL (unset)";
+export const PRECOMPUTED_DIMENSION_PREFIX = "precomputed:";
 // Colors:
 // export const variant_null = "#999";
 // export const variant_0 = "#4f69ff";
@@ -125,6 +131,7 @@ export const sdkLanguages = [
   "edge-fastly",
   "edge-lambda",
   "edge-other",
+  "rust",
   "other",
 ] as const;
 

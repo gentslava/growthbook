@@ -10,17 +10,24 @@ import {
 } from "shared/permissions";
 import uniqid from "uniqid";
 import { LicenseInterface, accountFeatures } from "shared/enterprise";
-import { AgreementType } from "shared/validators";
+import { AgreementType, updateSdkWebhookValidator } from "shared/validators";
 import { entityTypes } from "shared/constants";
-import { getWatchedByUser } from "back-end/src/models/WatchModel";
+import { UpdateSdkWebhookProps } from "shared/types/webhook";
 import {
-  UpdateSdkWebhookProps,
-  deleteLegacySdkWebhookById,
-  deleteSdkWebhookById,
-  findAllLegacySdkWebhooks,
-  findSdkWebhookById,
-  updateSdkWebhook,
-} from "back-end/src/models/WebhookModel";
+  GetOrganizationResponse,
+  CreateOrganizationPostBody,
+  Invite,
+  MemberRoleWithProjects,
+  NamespaceUsage,
+  OrganizationInterface,
+  OrganizationSettings,
+  ProjectMemberRole,
+  Role,
+  SDKAttribute,
+} from "shared/types/organization";
+import { ExperimentRule, NamespaceValue } from "shared/types/feature";
+import { TeamInterface } from "shared/types/team";
+import { getWatchedByUser } from "back-end/src/models/WatchModel";
 import { validateRoleAndEnvs } from "back-end/src/api/members/updateMemberRole";
 import {
   AuthRequest,
@@ -48,22 +55,14 @@ import {
 import { updatePassword } from "back-end/src/services/users";
 import { getAllTags } from "back-end/src/models/TagModel";
 import {
-  GetOrganizationResponse,
-  CreateOrganizationPostBody,
-  Invite,
-  MemberRoleWithProjects,
-  NamespaceUsage,
-  OrganizationInterface,
-  OrganizationSettings,
-  Role,
-  SDKAttribute,
-} from "back-end/types/organization";
-import {
   auditDetailsUpdate,
   getRecentWatchedAudits,
   isValidAuditEntityType,
 } from "back-end/src/services/audit";
-import { getAllFeatures } from "back-end/src/models/FeatureModel";
+import {
+  getAllFeatures,
+  hasNonDemoFeature,
+} from "back-end/src/models/FeatureModel";
 import { findDimensionsByOrganization } from "back-end/src/models/DimensionModel";
 import {
   ALLOW_SELF_ORG_CREATION,
@@ -80,7 +79,6 @@ import {
   sendOwnerEmailChangeEmail,
 } from "back-end/src/services/email";
 import { getDataSourcesByOrganization } from "back-end/src/models/DataSourceModel";
-import { getAllSavedGroups } from "back-end/src/models/SavedGroupModel";
 import { getMetricsByOrganization } from "back-end/src/models/MetricModel";
 import {
   createOrganization,
@@ -97,7 +95,6 @@ import {
   addGetStartedChecklistItem,
 } from "back-end/src/models/OrganizationModel";
 import { ConfigFile } from "back-end/src/init/config";
-import { ExperimentRule, NamespaceValue } from "back-end/types/feature";
 import { usingOpenId } from "back-end/src/services/auth";
 import { getSSOConnectionSummary } from "back-end/src/models/SSOConnectionModel";
 import {
@@ -119,6 +116,7 @@ import {
 import {
   getAllExperiments,
   getExperimentsForActivityFeed,
+  hasNonDemoExperiment,
 } from "back-end/src/models/ExperimentModel";
 import {
   findAllAuditsByEntityType,
@@ -132,7 +130,6 @@ import {
 } from "back-end/src/models/AuditModel";
 import { getTeamsForOrganization } from "back-end/src/models/TeamModel";
 import { getAllFactTablesForOrganization } from "back-end/src/models/FactTableModel";
-import { TeamInterface } from "back-end/types/team";
 import { fireSdkWebhook } from "back-end/src/jobs/sdkWebhooks";
 import {
   getLicenseMetaData,
@@ -147,6 +144,7 @@ import {
   getEffectiveAccountPlan,
   getLicenseError,
   getSubscriptionFromLicense,
+  orgHasPremiumFeature,
 } from "back-end/src/enterprise";
 import { getUsageFromCache } from "back-end/src/enterprise/billing";
 import { logger } from "back-end/src/util/logger";
@@ -183,7 +181,7 @@ export async function getDefinitions(req: AuthRequest, res: Response) {
     context.models.segments.getAll(),
     context.models.metricGroups.getAll(),
     getAllTags(orgId),
-    getAllSavedGroups(orgId),
+    context.models.savedGroups.getAllWithoutValues(),
     context.models.customFields.getCustomFields(),
     context.models.projects.getAll(),
     getAllFactTablesForOrganization(context),
@@ -491,6 +489,98 @@ export async function putMemberRole(
     return res.status(400).json({
       status: 400,
       message: e.message || "Failed to change role",
+    });
+  }
+}
+
+export async function putMemberProjectRole(
+  req: AuthRequest<{ projectRole: ProjectMemberRole }, { id: string }>,
+  res: Response,
+) {
+  const context = getContextFromReq(req);
+
+  const { org, userId } = context;
+  const { projectRole } = req.body;
+  const { id } = req.params;
+
+  // Project-admins can update project roles for their project - so we check if they have the canUpdateProject permission
+  // rather than the canManageTeam permission
+  if (!context.permissions.canUpdateProject(projectRole.project)) {
+    context.permissions.throwPermissionError();
+  }
+
+  if (id === userId) {
+    return res.status(400).json({
+      status: 400,
+      message: "Cannot change your own role",
+    });
+  }
+
+  if (!orgHasPremiumFeature(org, "advanced-permissions")) {
+    return res.status(400).json({
+      status: 400,
+      message:
+        "Your plan does not support providing users with project-level permissions.",
+    });
+  }
+
+  // Validate the project role
+  const { memberIsValid, reason } = validateRoleAndEnvs(
+    org,
+    projectRole.role,
+    projectRole.limitAccessByEnvironment || false,
+    projectRole.environments,
+  );
+
+  if (!memberIsValid) {
+    return res.status(400).json({
+      status: 400,
+      message: reason,
+    });
+  }
+  const updatedProjectRole: ProjectMemberRole = {
+    ...projectRole,
+  };
+
+  let found = false;
+  org.members.forEach((m) => {
+    if (m.id === id) {
+      if (!m.projectRoles) {
+        m.projectRoles = [];
+      }
+      // Check if project role already exists
+      const existingIndex = m.projectRoles.findIndex(
+        (pr) => pr.project === projectRole.project,
+      );
+      if (existingIndex >= 0) {
+        // Update existing project role
+        m.projectRoles[existingIndex] = updatedProjectRole;
+      } else {
+        // Add new project role
+        m.projectRoles.push(updatedProjectRole);
+      }
+      found = true;
+    }
+  });
+
+  if (!found) {
+    return res.status(404).json({
+      status: 404,
+      message: "Cannot find member",
+    });
+  }
+
+  try {
+    await updateOrganization(org.id, {
+      members: org.members,
+    });
+    return res.status(200).json({
+      status: 200,
+    });
+  } catch (e) {
+    return res.status(400).json({
+      status: 400,
+      message: e.message || "Failed to update project role",
     });
   }
 }
@@ -1773,7 +1863,7 @@ export async function postApiKeyReveal(
 
 export async function getLegacyWebhooks(req: AuthRequest, res: Response) {
   const context = getContextFromReq(req);
-  const webhooks = await findAllLegacySdkWebhooks(context);
+  const webhooks = await context.models.sdkWebhooks.findAllLegacySdkWebhooks();
 
   res.status(200).json({
     status: 200,
@@ -1790,7 +1880,7 @@ export async function testSDKWebhook(
   const webhookId = req.params.id;
 
   const context = getContextFromReq(req);
-  const webhook = await findSdkWebhookById(context, webhookId);
+  const webhook = await context.models.sdkWebhooks.getById(webhookId);
   if (!webhook) {
     throw new Error("Could not find webhook");
   }
@@ -1819,7 +1909,7 @@ export async function putSDKWebhook(
   const context = getContextFromReq(req);
 
   const { id } = req.params;
-  const webhook = await findSdkWebhookById(context, id);
+  const webhook = await context.models.sdkWebhooks.getById(id);
   if (!webhook) {
     throw new Error("Could not find webhook");
   }
@@ -1833,7 +1923,10 @@ export async function putSDKWebhook(
     context.permissions.throwPermissionError();
   }
 
-  const updatedWebhook = await updateSdkWebhook(context, webhook, req.body);
+  const updatedWebhook = await context.models.sdkWebhooks.update(
+    webhook,
+    updateSdkWebhookValidator.parse(req.body),
+  );
 
   // Fire the webhook now that it has changed
   fireSdkWebhook(context, updatedWebhook).catch(() => {
@@ -1855,7 +1948,7 @@ export async function deleteLegacyWebhook(
     context.permissions.throwPermissionError();
   }
   const { id } = req.params;
-  await deleteLegacySdkWebhookById(context, id);
+  await context.models.sdkWebhooks.deleteLegacySdkWebhookById(id);
 
   res.status(200).json({
     status: 200,
@@ -1869,7 +1962,7 @@ export async function deleteSDKWebhook(
   const context = getContextFromReq(req);
   const { id } = req.params;
 
-  const webhook = await findSdkWebhookById(context, id);
+  const webhook = await context.models.sdkWebhooks.getById(id);
   if (webhook) {
     // It's ok if conns is empty here
     // We still want to allow deleting orphaned webhooks
@@ -1879,7 +1972,7 @@ export async function deleteSDKWebhook(
     }
   }
 
-  await deleteSdkWebhookById(context, id);
+  await context.models.sdkWebhooks.deleteById(id);
 
   res.status(200).json({
     status: 200,
@@ -2440,4 +2533,16 @@ export async function postAgreeToAgreement(
   } catch (e) {
     return res.status(500).json({ status: 500, message: e.message });
   }
+}
+
+export async function getFeatureExpUsage(req: AuthRequest, res: Response) {
+  const context = getContextFromReq(req);
+  const hasFeatures = await hasNonDemoFeature(context);
+  const hasExperiments = await hasNonDemoExperiment(context);
+
+  return res.status(200).json({
+    status: 200,
+    hasFeatures,
+    hasExperiments,
+  });
 }

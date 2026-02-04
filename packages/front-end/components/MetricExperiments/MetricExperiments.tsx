@@ -9,18 +9,18 @@ import {
   getMetricResultStatus,
   isFactMetric,
 } from "shared/experiments";
-import { DifferenceType, StatsEngine } from "back-end/types/stats";
+import { DifferenceType, StatsEngine } from "shared/types/stats";
 import {
   ExperimentWithSnapshot,
   SnapshotMetric,
-} from "back-end/types/experiment-snapshot";
+} from "shared/types/experiment-snapshot";
 import {
   ExperimentDecisionFrameworkSettings,
   ExperimentPhaseStringDates,
   ExperimentResultsType,
   ExperimentStatus,
   Variation,
-} from "back-end/types/experiment";
+} from "shared/types/experiment";
 import useApi from "@/hooks/useApi";
 import ExperimentStatusIndicator from "@/components/Experiment/TabbedPage/ExperimentStatusIndicator";
 import ChangeColumn from "@/components/Experiment/ChangeColumn";
@@ -29,7 +29,7 @@ import Pagination from "@/components/Pagination";
 import { useOrganizationMetricDefaults } from "@/hooks/useOrganizationMetricDefaults";
 import useConfidenceLevels from "@/hooks/useConfidenceLevels";
 import usePValueThreshold from "@/hooks/usePValueThreshold";
-import { experimentDate } from "@/services/experiments";
+import { experimentDate, RowResults } from "@/services/experiments";
 import { useSearch } from "@/services/search";
 import { formatNumber } from "@/services/metrics";
 import track from "@/services/track";
@@ -236,6 +236,13 @@ function MetricExperimentResultTab({
                 enoughData: true,
                 directionalStatus: e.directionalStatus ?? "losing",
                 hasScaledImpact: true,
+                significant: e.significant ?? false,
+                resultsStatus:
+                  (e.resultsStatus as RowResults["resultsStatus"]) ?? "",
+                suspiciousChange: false,
+                suspiciousThreshold: 0,
+                minPercentChange: 0,
+                currentMetricTotal: e.variationResults?.value ?? 0,
               }}
               showPlusMinus={false}
               statsEngine={e.statsEngine}

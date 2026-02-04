@@ -10,11 +10,11 @@ import {
   UpdateColumnProps,
   UpdateFactTableProps,
   ColumnInterface,
-} from "back-end/types/fact-table";
-import { ApiFactTable, ApiFactTableFilter } from "back-end/types/openapi";
+} from "shared/types/fact-table";
+import { ApiFactTable, ApiFactTableFilter } from "shared/types/openapi";
 import { ReqContext } from "back-end/types/request";
 import { ApiReqContext } from "back-end/types/api";
-import { promiseAllChunks } from "../util/promise";
+import { promiseAllChunks } from "back-end/src/util/promise";
 
 const factTableSchema = new mongoose.Schema({
   id: String,
@@ -48,6 +48,7 @@ const factTableSchema = new mongoose.Schema({
       topValuesDate: Date,
       isAutoSliceColumn: Boolean,
       autoSlices: [String],
+      lockedAutoSlices: [String],
     },
   ],
   columnsError: String,
@@ -64,6 +65,7 @@ const factTableSchema = new mongoose.Schema({
     },
   ],
   archived: Boolean,
+  autoSliceUpdatesEnabled: Boolean,
 });
 
 factTableSchema.index({ id: 1, organization: 1 }, { unique: true });
@@ -198,6 +200,18 @@ export async function getFactTablesByIds(
   return factTables.filter((factTable) =>
     context.permissions.canReadMultiProjectResource(factTable.projects),
   );
+}
+
+// Get all fact tables with auto-slice updates enabled across all organizations.
+// Used by scheduled jobs that need to query across organizations.
+export async function getAllFactTablesWithAutoSliceUpdatesEnabled(): Promise<
+  FactTableInterface[]
+> {
+  const docs = await FactTableModel.find({
+    autoSliceUpdatesEnabled: true,
+    archived: { $ne: true },
+  });
+  return docs.map((doc) => toInterface(doc));
 }
 
 export async function createFactTable(
