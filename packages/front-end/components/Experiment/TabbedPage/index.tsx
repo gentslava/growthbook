@@ -1,5 +1,6 @@
 import {
   ExperimentInterfaceStringDates,
+  LinkedChangeEnvStates,
   LinkedFeatureInfo,
 } from "shared/types/experiment";
 import { VisualChangesetInterface } from "shared/types/visual-changeset";
@@ -31,7 +32,6 @@ import { useUser } from "@/services/UserContext";
 import useSDKConnections from "@/hooks/useSDKConnections";
 import DiscussionThread from "@/components/DiscussionThread";
 import { useAuth } from "@/services/auth";
-import { DeleteDemoDatasourceButton } from "@/components/DemoDataSourcePage/DemoDataSourcePage";
 import EditStatusModal from "@/components/Experiment/EditStatusModal";
 import VisualChangesetModal from "@/components/Experiment/VisualChangesetModal";
 import { useSnapshot } from "@/components/Experiment/SnapshotProvider";
@@ -46,6 +46,7 @@ import { useExperimentDashboards } from "@/hooks/useDashboards";
 import Callout from "@/ui/Callout";
 import Link from "@/ui/Link";
 import CompareExperimentEventsModal from "@/components/Experiment/CompareExperimentEventsModal";
+import { PreLaunchChecklistProvider } from "@/components/PreLaunchChecklist/PreLaunchChecklistProvider";
 import ExperimentHeader from "./ExperimentHeader";
 import SetupTabOverview from "./SetupTabOverview";
 import Implementation from "./Implementation";
@@ -74,9 +75,7 @@ export interface Props {
   mutate: () => void;
   duplicate?: (() => void) | null;
   editTags?: (() => void) | null;
-  checklistItemsRemaining: number | null;
   envs: string[];
-  setChecklistItemsRemaining: (value: number | null) => void;
   editVariations?: (() => void) | null;
   visualChangesets: VisualChangesetInterface[];
   urlRedirects: URLRedirectInterface[];
@@ -84,9 +83,12 @@ export interface Props {
   editPhase?: ((i: number | null) => void) | null;
   editPhases?: (() => void) | null;
   editTargeting?: (() => void) | null;
+  editTraffic?: (() => void) | null;
   editMetrics?: (() => void) | null;
   editResult?: (() => void) | null;
-  editHoldoutSchedule?: (() => void) | null;
+  editSchedule?: (() => void) | null;
+  visualChangesetEnvStates?: LinkedChangeEnvStates;
+  urlRedirectEnvStates?: LinkedChangeEnvStates;
 }
 
 export default function TabbedPage({
@@ -103,13 +105,14 @@ export default function TabbedPage({
   envs,
   urlRedirects,
   editTargeting,
+  editTraffic,
   newPhase,
   editPhases,
   editMetrics,
   editResult,
-  checklistItemsRemaining,
-  setChecklistItemsRemaining,
-  editHoldoutSchedule,
+  editSchedule,
+  visualChangesetEnvStates,
+  urlRedirectEnvStates,
 }: Props) {
   const [tab, setTab] = useLocalStorage<ExperimentTab>(
     `tabbedPageTab__${experiment.id}`,
@@ -374,16 +377,6 @@ export default function TabbedPage({
   const { data: sdkConnectionsData } = useSDKConnections();
   const connections = sdkConnectionsData?.connections || [];
 
-  const projectConnections = connections.filter(
-    (connection) =>
-      !connection.projects.length ||
-      connection.projects.includes(experiment.project || ""),
-  );
-  const matchingConnections = projectConnections.filter(
-    (connection) =>
-      !visualChangesets.length || connection.includeVisualExperiments,
-  );
-
   const { data, mutate: mutateWatchers } = useApi<{
     userIds: string[];
   }>(`/experiment/${experiment.id}/watchers`);
@@ -410,6 +403,13 @@ export default function TabbedPage({
   const showMetricGroupPromo = (): boolean => {
     if (metricGroups.length) return false;
 
+    if (
+      experiment.project ===
+      getDemoDatasourceProjectIdForOrganization(organization.id)
+    ) {
+      return false;
+    }
+
     // only show if there are atleast 2 metrics in any section
     if (
       experiment.goalMetrics.length > 2 ||
@@ -428,7 +428,15 @@ export default function TabbedPage({
     experiment.status === "stopped" && tab !== "dashboards";
 
   return (
-    <>
+    <PreLaunchChecklistProvider
+      experiment={experiment}
+      linkedFeatures={linkedFeatures}
+      visualChangesets={visualChangesets}
+      connections={connections}
+      mutateExperiment={mutate}
+      editTargeting={editTargeting}
+      envs={envs}
+    >
       {compareModal && (
         <CompareExperimentEventsModal
           experiment={experiment}
@@ -493,6 +501,9 @@ export default function TabbedPage({
           close={() => setFeatureModal(false)}
           mutate={mutate}
           source={trackSource}
+          reAddableFeatureIds={linkedFeatures
+            .filter((f) => f.state === "discarded")
+            .map((f) => f.feature.id)}
         />
       )}
       {/* TODO: Update Experiment Header props to include redirect and pipe through to StartExperimentBanner */}
@@ -516,11 +527,12 @@ export default function TabbedPage({
         newPhase={newPhase}
         editPhases={editPhases}
         healthNotificationCount={healthNotificationCount}
-        checklistItemsRemaining={checklistItemsRemaining}
         linkedFeatures={linkedFeatures}
+        visualChangesets={visualChangesets}
+        urlRedirects={urlRedirects}
         showDashboardView={showDashboardView}
         safeToEdit={safeToEdit}
-        editHoldoutSchedule={editHoldoutSchedule}
+        editSchedule={editSchedule}
       />
 
       <div
@@ -529,21 +541,6 @@ export default function TabbedPage({
           showDashboardView && "pt-0",
         )}
       >
-        {experiment.project ===
-          getDemoDatasourceProjectIdForOrganization(organization.id) && (
-          <div className="alert alert-info d-flex align-items-center mb-0 mt-2">
-            <div className="flex-1">
-              This experiment is part of our sample dataset. You can safely
-              delete this once you are done exploring.
-            </div>
-            <div style={{ width: 180 }} className="ml-2">
-              <DeleteDemoDatasourceButton
-                onDelete={() => router.push("/experiments")}
-                source="experiment"
-              />
-            </div>
-          </div>
-        )}
         {experiment.type !== "holdout" &&
           tab !== "dashboards" &&
           !showDashboardView && (
@@ -603,14 +600,7 @@ export default function TabbedPage({
             holdoutExperiments={holdoutExperiments}
             mutate={mutate}
             disableEditing={viewingOldPhase}
-            linkedFeatures={linkedFeatures}
-            visualChangesets={visualChangesets}
-            editTargeting={editTargeting}
-            matchingConnections={matchingConnections}
-            checklistItemsRemaining={checklistItemsRemaining}
-            setChecklistItemsRemaining={setChecklistItemsRemaining}
-            envs={envs}
-            editHoldoutSchedule={editHoldoutSchedule}
+            editSchedule={editSchedule}
           />
           <Implementation
             experiment={experiment}
@@ -625,8 +615,11 @@ export default function TabbedPage({
             visualChangesets={visualChangesets}
             urlRedirects={urlRedirects}
             editTargeting={editTargeting}
+            editTraffic={editTraffic}
             linkedFeatures={linkedFeatures}
             envs={envs}
+            visualChangesetEnvStates={visualChangesetEnvStates}
+            urlRedirectEnvStates={urlRedirectEnvStates}
           />
           {experiment.status !== "draft" && (
             <div className="mt-3 mb-2 text-center d-print-none">
@@ -759,6 +752,6 @@ export default function TabbedPage({
           </div>
         </div>
       )}
-    </>
+    </PreLaunchChecklistProvider>
   );
 }

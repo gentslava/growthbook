@@ -1,4 +1,12 @@
-import { generateText, embed, Output } from "ai";
+import {
+  generateText,
+  streamText,
+  embed,
+  Output,
+  tool as aiTool,
+  stepCountIs,
+} from "ai";
+import type { ToolSet, ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createXai } from "@ai-sdk/xai";
@@ -14,6 +22,7 @@ import {
   AIPromptType,
   getProviderFromModel,
   getProviderFromEmbeddingModel,
+  isReasoningModel,
 } from "shared/ai";
 import { z, ZodObject, ZodRawShape } from "zod";
 import { OrganizationInterface } from "shared/types/organization";
@@ -25,7 +34,7 @@ import {
 } from "back-end/src/models/AITokenUsageModel";
 import { ApiReqContext } from "back-end/types/api";
 import { getAISettingsForOrg } from "back-end/src/services/organizations";
-import { logCloudAIUsage } from "back-end/src/services/clickhouse";
+import { logCloudAIUsage } from "back-end/src/services/licenseServerManagedClickhouse";
 import { IS_CLOUD } from "back-end/src/util/secrets";
 
 export const getAIProviderClass = (
@@ -47,7 +56,9 @@ export const getAIProviderClass = (
   } = getAISettingsForOrg(context, true);
 
   if (!aiEnabled) {
-    throw new Error("AI is not enabled for this organization.");
+    throw new Error(
+      "AI is not enabled for this organization. Visit Settings → AI Settings to enable it.",
+    );
   }
 
   const selectedProvider = getProviderFromModel(model);
@@ -191,10 +202,18 @@ export const simpleCompletion = async ({
 
   const messages = constructMessages(prompt, instructions);
 
+  // Reasoning models reject `temperature`; omit it rather than let the
+  // provider warn and drop it.
+  const effectiveTemperature = isReasoningModel(model)
+    ? undefined
+    : temperature;
+
   const generateOptions = {
     model: aiProvider(model) as Parameters<typeof generateText>[0]["model"],
     messages,
-    ...(temperature != null ? { temperature } : {}),
+    ...(effectiveTemperature != null
+      ? { temperature: effectiveTemperature }
+      : {}),
   };
 
   let numTokensUsed: number | undefined;
@@ -234,13 +253,84 @@ export const simpleCompletion = async ({
       model,
       numPromptTokensUsed: inputTokensUsed,
       numCompletionTokensUsed: outputTokensUsed,
-      temperature,
+      temperature: effectiveTemperature,
       usedDefaultPrompt: isDefaultPrompt,
     });
   }
 
   return result;
 };
+
+export const streamingChatCompletion = async ({
+  context,
+  system,
+  messages,
+  temperature,
+  type,
+  isDefaultPrompt,
+  overrideModel,
+  tools,
+  maxSteps = 1,
+  abortSignal,
+}: {
+  context: ReqContext | ApiReqContext;
+  system: string;
+  messages: ModelMessage[];
+  temperature?: number;
+  type: AIPromptType;
+  isDefaultPrompt: boolean;
+  overrideModel?: AIModel;
+  tools?: ToolSet;
+  maxSteps?: number;
+  abortSignal?: AbortSignal;
+}) => {
+  const { defaultAIModel } = getAISettingsForOrg(context, true);
+  const model = overrideModel || defaultAIModel;
+  const aiProvider = getAIProviderClass(context, model);
+
+  if (aiProvider == null) {
+    throw new Error("AI provider not enabled or key not set");
+  }
+
+  // Reasoning models reject `temperature`; omit it rather than let the
+  // provider warn and drop it.
+  const effectiveTemperature = isReasoningModel(model)
+    ? undefined
+    : temperature;
+
+  const result = streamText({
+    model: aiProvider(model) as Parameters<typeof streamText>[0]["model"],
+    system,
+    messages,
+    ...(effectiveTemperature != null
+      ? { temperature: effectiveTemperature }
+      : {}),
+    ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(abortSignal ? { abortSignal } : {}),
+    onFinish: async ({ usage }) => {
+      if (IS_CLOUD) {
+        const numTokensUsed = usage?.totalTokens ?? 0;
+        if (numTokensUsed) {
+          await updateTokenUsage({ numTokensUsed, organization: context.org });
+        }
+
+        logCloudAIUsage({
+          organization: context.org.id,
+          type,
+          model,
+          numPromptTokensUsed: usage?.inputTokens,
+          numCompletionTokensUsed: usage?.outputTokens,
+          temperature: effectiveTemperature,
+          usedDefaultPrompt: isDefaultPrompt,
+        });
+      }
+    },
+  });
+
+  return result;
+};
+
+export { aiTool };
 
 export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
   context,
@@ -251,6 +341,10 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
   isDefaultPrompt,
   zodObjectSchema,
   overrideModel,
+  tools,
+  maxSteps = 1,
+  cacheSystemPrompt = false,
+  onStepFinish,
 }: {
   context: ReqContext | ApiReqContext;
   instructions?: string;
@@ -260,6 +354,21 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
   isDefaultPrompt: boolean;
   zodObjectSchema: T;
   overrideModel?: AIModel;
+  // Optional tool-calling: when present, the model may emit tool calls
+  // across up to `maxSteps` LLM round-trips before producing the final
+  // structured output. Default of 1 keeps the no-tools shape identical.
+  tools?: ToolSet;
+  maxSteps?: number;
+  // Mark the system message as cacheable on providers that honor an
+  // explicit cache breakpoint (Anthropic). OpenAI and Google cache
+  // automatically based on prefix, so this flag is a no-op for them.
+  // Cache TTL is ~5 minutes; back-to-back chat turns benefit, idle
+  // sessions don't.
+  cacheSystemPrompt?: boolean;
+  // Per-step telemetry hook — fires after each LLM round-trip in a
+  // tool-calling loop. Useful for logging which tools the model picked
+  // and how many steps a turn used.
+  onStepFinish?: Parameters<typeof generateText>[0]["onStepFinish"];
 }): Promise<z.infer<T>> => {
   const { defaultAIModel } = getAISettingsForOrg(context, true);
   const model = overrideModel || defaultAIModel;
@@ -278,13 +387,42 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
 
   const messages = constructMessages(prompt, instructions);
 
+  // Attach a provider-specific cache breakpoint to the system message
+  // when requested. Anthropic charges ~10% of input cost for cached
+  // tokens on hit — for a multi-step tool-calling loop where the system
+  // prompt is large and re-sent N times, this is the difference between
+  // tool calling being roughly cost-neutral vs N× more expensive than
+  // single-shot.
+  if (cacheSystemPrompt && instructions) {
+    const sys = messages.find((m) => m.role === "system");
+    if (sys) {
+      (
+        sys as ChatCompletionRequestMessage & {
+          providerOptions?: Record<string, unknown>;
+        }
+      ).providerOptions = {
+        anthropic: { cacheControl: { type: "ephemeral" } },
+      };
+    }
+  }
+
+  // Reasoning models reject `temperature`; omit it rather than let the
+  // provider warn and drop it.
+  const effectiveTemperature = isReasoningModel(model)
+    ? undefined
+    : temperature;
+
   const response = await generateText({
     model: aiProvider(model) as Parameters<typeof generateText>[0]["model"],
     messages: messages,
     output: Output.object({
       schema: zodObjectSchema,
     }),
-    ...(temperature != null ? { temperature } : {}),
+    ...(effectiveTemperature != null
+      ? { temperature: effectiveTemperature }
+      : {}),
+    ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
+    ...(onStepFinish ? { onStepFinish } : {}),
   });
 
   if (IS_CLOUD) {
@@ -295,7 +433,7 @@ export const parsePrompt = async <T extends ZodObject<ZodRawShape>>({
       model: model,
       numPromptTokensUsed: response.usage?.inputTokens,
       numCompletionTokensUsed: response.usage?.outputTokens,
-      temperature,
+      temperature: effectiveTemperature,
       usedDefaultPrompt: isDefaultPrompt,
     });
 

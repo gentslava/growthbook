@@ -23,6 +23,7 @@ import {
   findSDKConnectionsByOrganization,
   testProxyConnection,
 } from "back-end/src/models/SdkConnectionModel";
+import { validateRequireProjectForSdkConnections } from "back-end/src/api/sdk-connections/validations";
 import { queueSDKPayloadRefresh } from "back-end/src/services/features";
 
 export const getSDKConnections = async (
@@ -55,6 +56,8 @@ export const postSDKConnection = async (
     context.permissions.throwPermissionError();
   }
 
+  validateRequireProjectForSdkConnections(org, params.projects);
+
   let encryptPayload = false;
   if (orgHasPremiumFeature(org, "encrypt-features-endpoint")) {
     encryptPayload = params.encryptPayload;
@@ -68,11 +71,6 @@ export const postSDKConnection = async (
   let remoteEvalEnabled = false;
   if (orgHasPremiumFeature(org, "remote-evaluation")) {
     remoteEvalEnabled = params.remoteEvalEnabled || false;
-  }
-
-  if (remoteEvalEnabled) {
-    encryptPayload = false;
-    hashSecureAttributes = false;
   }
 
   const doc = await createSDKConnection(context, {
@@ -116,6 +114,12 @@ export const putSDKConnection = async (
     context.permissions.throwPermissionError();
   }
 
+  validateRequireProjectForSdkConnections(
+    context.org,
+    req.body.projects,
+    connection.projects,
+  );
+
   let encryptPayload = req.body.encryptPayload || false;
   const encryptionPermitted = orgHasPremiumFeature(
     context.org,
@@ -135,11 +139,6 @@ export const putSDKConnection = async (
   let remoteEvalEnabled = false;
   if (orgHasPremiumFeature(context.org, "remote-evaluation")) {
     remoteEvalEnabled = req.body.remoteEvalEnabled || false;
-  }
-
-  if (remoteEvalEnabled) {
-    encryptPayload = false;
-    hashSecureAttributes = false;
   }
 
   await editSDKConnection(context, connection, {
@@ -191,7 +190,7 @@ export const checkSDKConnectionProxyStatus = async (
     throw new Error("Could not find SDK Connection");
   }
 
-  const result = await testProxyConnection(connection);
+  const result = await testProxyConnection(context, connection, true);
 
   res.status(200).json({
     status: 200,

@@ -16,7 +16,8 @@ import {
   FactTableColumnType,
 } from "shared/types/fact-table";
 import { DataSourceInterface } from "shared/types/datasource";
-import { CreateProps } from "shared/types/base-model";
+import { QueryStatus } from "shared/types/query";
+import { CreateProps, UpdateProps } from "shared/types/base-model";
 import { ReqContext } from "back-end/types/request";
 import { AuthRequest } from "back-end/src/types/AuthRequest";
 import { getContextFromReq } from "back-end/src/services/organizations";
@@ -41,9 +42,21 @@ import {
   populateAutoSlices,
   queueFactTableColumnsRefresh,
 } from "back-end/src/jobs/refreshFactTableColumns";
-import { deriveUserIdTypesFromColumns } from "back-end/src/util/factTable";
+import {
+  deriveUserIdTypesFromColumns,
+  validateAggregatedFactTableSettings,
+  getNextUpdateOccurrence,
+} from "back-end/src/util/factTable";
 import { logger } from "back-end/src/util/logger";
 import { needsColumnRefresh } from "back-end/src/api/fact-tables/updateFactTable";
+import {
+  AggregatedFactTableStatus,
+  buildAggregatedFactTableStatus,
+  getAggregatedFactTableMetrics,
+  runAggregatedFactTableUpdate,
+} from "back-end/src/services/aggregatedFactTables";
+import { buildAggregatedFactTableSchemaState } from "back-end/src/enterprise/services/data-pipeline";
+import { AggregatedFactTableQueryRunner } from "back-end/src/queryRunners/AggregatedFactTableQueryRunner";
 
 export const getFactTables = async (
   req: AuthRequest,
@@ -75,6 +88,8 @@ async function testFilterQuery(
     throw new Error("Testing not supported on this data source");
   }
 
+  const timestampColumn = "timestamp";
+
   const sql = integration.getTestQuery({
     // Must have a newline after factTable sql in case it ends with a comment
     query: `SELECT * FROM (
@@ -84,10 +99,15 @@ async function testFilterQuery(
       eventName: factTable.eventName,
     },
     testDays: context.org.settings?.testQueryDays,
+    timestampColumn,
   });
 
   try {
-    const results = await integration.runTestQuery(sql);
+    const results = await integration.runTestQuery(
+      sql,
+      [timestampColumn],
+      "factTableValidation",
+    );
     return {
       sql,
       ...results,
@@ -180,15 +200,22 @@ export async function refreshColumns(
     !forceColumnRefresh &&
     integration.supportsLimitZeroColumnValidation?.()
   ) {
+    const timestampColumn = "timestamp";
+
     // Fast path: LIMIT 0 query
     const sql = integration.getTestQuery({
       query: factTable.sql,
       templateVariables: { eventName: factTable.eventName },
       testDays: context.org.settings?.testQueryDays,
       limit: 0,
+      timestampColumn,
     });
 
-    const result = await integration.runTestQuery(sql, ["timestamp"]);
+    const result = await integration.runTestQuery(
+      sql,
+      [timestampColumn],
+      "factTableValidation",
+    );
 
     if (!result.columns?.length) {
       throw new Error("SQL did not return any columns");
@@ -243,6 +270,21 @@ export const postFactTable = async (
 
     data.columns = columns;
     data.columnRefreshPending = needsBackgroundRefresh;
+  }
+
+  if (data.aggregatedFactTableSettings) {
+    if (!context.hasPremiumFeature("pipeline-mode")) {
+      throw new Error(
+        "Maintaining shared daily aggregated tables requires the data pipeline feature.",
+      );
+    }
+    if (!context.permissions.canUpdateDataSourceSettings(datasource)) {
+      context.permissions.throwPermissionError();
+    }
+    validateAggregatedFactTableSettings(
+      data.aggregatedFactTableSettings,
+      data.userIdTypes,
+    );
   }
 
   const factTable = await createFactTable(context, data);
@@ -310,6 +352,26 @@ export const putFactTable = async (
     columnRefreshResults.userIdTypes = deriveUserIdTypesFromColumns(
       datasource,
       columns,
+    );
+  }
+
+  if (data.aggregatedFactTableSettings) {
+    if (!context.hasPremiumFeature("pipeline-mode")) {
+      throw new Error(
+        "Maintaining shared daily aggregated tables requires the data pipeline feature.",
+      );
+    }
+    if (!context.permissions.canUpdateDataSourceSettings(datasource)) {
+      context.permissions.throwPermissionError();
+    }
+    // Validate against the effective userIdTypes after any column refresh.
+    const effectiveUserIdTypes =
+      columnRefreshResults?.userIdTypes ??
+      data.userIdTypes ??
+      factTable.userIdTypes;
+    validateAggregatedFactTableSettings(
+      data.aggregatedFactTableSettings,
+      effectiveUserIdTypes,
     );
   }
 
@@ -406,6 +468,273 @@ export const deleteFactTable = async (
   });
 };
 
+export const getAggregatedFactTables = async (
+  req: AuthRequest<null, { id: string }>,
+  res: Response<{
+    status: 200;
+    aggregatedFactTables: AggregatedFactTableStatus[];
+    nextScheduledUpdate: Date | null;
+  }>,
+) => {
+  const context = getContextFromReq(req);
+
+  const factTable = await getFactTable(context, req.params.id);
+  if (!factTable) {
+    throw new Error("Could not find fact table with that id");
+  }
+
+  const idTypes = factTable.aggregatedFactTableSettings?.idTypes ?? [];
+  const registryDocs =
+    await context.models.aggregatedFactTables.getByFactTableId(factTable.id);
+  const byIdType = new Map(registryDocs.map((doc) => [doc.idType, doc]));
+
+  // Build the same schema state the nightly driver would, so the UI can warn
+  // when the next run will be forced to restate. Read-only; no warehouse query.
+  const factMetrics = await context.models.factMetrics.getAll();
+  const metrics = getAggregatedFactTableMetrics({ factMetrics, factTable });
+  const { factTableSettingsHash, metricState } =
+    buildAggregatedFactTableSchemaState({ factTable, metrics });
+
+  const aggregatedFactTables: AggregatedFactTableStatus[] = idTypes.map(
+    (idType) =>
+      buildAggregatedFactTableStatus({
+        idType,
+        doc: byIdType.get(idType),
+        factTableSettingsHash,
+        metricState,
+      }),
+  );
+
+  const nextScheduledUpdate = factTable.aggregatedFactTableSettings
+    ? getNextUpdateOccurrence(factTable.aggregatedFactTableSettings.updateTime)
+    : null;
+
+  res.status(200).json({
+    status: 200,
+    aggregatedFactTables,
+    nextScheduledUpdate,
+  });
+};
+
+type AggregatedFactTableRunSummary = {
+  id: string;
+  mode: "incremental" | "restate";
+  status: QueryStatus;
+  runStarted: Date | null;
+  dateCreated: Date;
+  finishedAt: Date | null;
+  error: string | null;
+  queryIds: string[];
+};
+
+function deriveRunStatus(
+  queries: { status: QueryStatus }[],
+  error: string | null,
+): QueryStatus {
+  // A recorded error is terminal; surface as failed even if query pointers are
+  // stale (e.g. a run finalized out-of-process by the expireOldQueries reaper).
+  if (error) return "failed";
+
+  const total = queries.length;
+  if (!total) return "queued";
+
+  const failed = queries.filter((q) => q.status === "failed").length;
+  const running = queries.filter((q) => q.status === "running").length;
+  const queued = queries.filter((q) => q.status === "queued").length;
+
+  if (queued + running > 0) return "running";
+  if (failed > 0) return "failed";
+  return "succeeded";
+}
+
+export const getAggregatedFactTableRuns = async (
+  req: AuthRequest<null, { id: string; idType: string }>,
+  res: Response<{
+    status: 200;
+    runs: AggregatedFactTableRunSummary[];
+  }>,
+) => {
+  const context = getContextFromReq(req);
+
+  const factTable = await getFactTable(context, req.params.id);
+  if (!factTable) {
+    throw new Error("Could not find fact table with that id");
+  }
+
+  const { idType } = req.params;
+  if (
+    !(factTable.aggregatedFactTableSettings?.idTypes ?? []).includes(idType)
+  ) {
+    throw new Error(
+      `id type '${idType}' is not enabled for shared daily aggregated tables on this fact table.`,
+    );
+  }
+
+  const runDocs =
+    await context.models.aggregatedFactTableRuns.getRecentByFactTableAndIdType(
+      factTable.id,
+      idType,
+    );
+
+  const runs: AggregatedFactTableRunSummary[] = runDocs.map((run) => ({
+    id: run.id,
+    mode: run.mode,
+    status: deriveRunStatus(run.queries, run.error),
+    runStarted: run.runStarted,
+    dateCreated: run.dateCreated,
+    finishedAt: run.finishedAt,
+    error: run.error,
+    queryIds: run.queries.map((q) => q.query),
+  }));
+
+  res.status(200).json({
+    status: 200,
+    runs,
+  });
+};
+
+export const refreshAggregatedFactTables = async (
+  req: AuthRequest<{ idType?: string; fullRestate?: boolean }, { id: string }>,
+  res: Response<{ status: 200; queued: string[] }>,
+) => {
+  const context = getContextFromReq(req);
+
+  const factTable = await getFactTable(context, req.params.id);
+  if (!factTable) {
+    throw new Error("Could not find fact table with that id");
+  }
+
+  if (!context.hasPremiumFeature("pipeline-mode")) {
+    throw new Error(
+      "Maintaining shared daily aggregated tables requires the data pipeline feature.",
+    );
+  }
+
+  const datasource = await getDataSourceById(context, factTable.datasource);
+  if (!datasource) {
+    throw new Error("Could not find datasource for this fact table");
+  }
+
+  if (!context.permissions.canUpdateDataSourceSettings(datasource)) {
+    context.permissions.throwPermissionError();
+  }
+
+  const enabledIdTypes = factTable.aggregatedFactTableSettings?.idTypes ?? [];
+  if (!enabledIdTypes.length) {
+    throw new Error(
+      "This fact table does not have any id types enabled for shared daily aggregated tables.",
+    );
+  }
+
+  let idTypes = enabledIdTypes;
+  if (req.body.idType) {
+    if (!enabledIdTypes.includes(req.body.idType)) {
+      throw new Error(
+        `id type '${req.body.idType}' is not enabled for shared daily aggregated tables on this fact table.`,
+      );
+    }
+    idTypes = [req.body.idType];
+  }
+
+  // Kick off directly (not via the nightly agenda queue); each call returns
+  // once the run doc + queries exist and finishes in the background.
+  for (const idType of idTypes) {
+    await runAggregatedFactTableUpdate(context, factTable, idType, {
+      forceRestate: !!req.body.fullRestate,
+      awaitResults: false,
+    });
+  }
+
+  res.status(200).json({
+    status: 200,
+    queued: idTypes,
+  });
+};
+
+export const cancelAggregatedFactTableRun = async (
+  req: AuthRequest<null, { id: string; idType: string }>,
+  res: Response<{ status: 200 }>,
+) => {
+  const context = getContextFromReq(req);
+
+  const factTable = await getFactTable(context, req.params.id);
+  if (!factTable) {
+    throw new Error("Could not find fact table with that id");
+  }
+  const factTableDatasource = await getDataSourceById(
+    context,
+    factTable.datasource,
+  );
+  if (!factTableDatasource) {
+    throw new Error("Could not find datasource for this fact table");
+  }
+
+  if (!context.permissions.canUpdateDataSourceSettings(factTableDatasource)) {
+    context.permissions.throwPermissionError();
+  }
+
+  const { idType } = req.params;
+  if (
+    !(factTable.aggregatedFactTableSettings?.idTypes ?? []).includes(idType)
+  ) {
+    throw new Error(
+      `id type '${idType}' is not enabled for shared daily aggregated tables on this fact table.`,
+    );
+  }
+
+  const runDocs =
+    await context.models.aggregatedFactTableRuns.getRecentByFactTableAndIdType(
+      factTable.id,
+      idType,
+    );
+
+  const run = runDocs.find(
+    (r) => deriveRunStatus(r.queries, r.error) === "running",
+  );
+  if (!run) {
+    res.status(200).json({ status: 200 });
+    return;
+  }
+
+  const datasource = await getDataSourceById(context, run.datasourceId);
+  if (!datasource) {
+    throw new Error("Could not find datasource for this run");
+  }
+
+  const integration = getSourceIntegrationObject(context, datasource, true);
+
+  const queryRunner = new AggregatedFactTableQueryRunner(
+    context,
+    run,
+    integration,
+    false,
+  );
+  await queryRunner.cancelQueries();
+
+  // cancelQueries blanks the error/queries (read as "queued"); restore them and
+  // record a terminal error so the run shows as failed with viewable queries.
+  await context.models.aggregatedFactTableRuns.updateRunFields(run.id, {
+    error: "Run cancelled by user",
+    finishedAt: new Date(),
+    queries: run.queries,
+  });
+
+  // cancelQueries can't release the registry lock without the run's executionId.
+  const key = {
+    datasourceId: run.datasourceId,
+    factTableId: run.factTableId,
+    idType: run.idType,
+  };
+  await context.models.aggregatedFactTables.updateByKeyIfCurrentExecution(
+    key,
+    run.executionId,
+    { lastError: "Run cancelled by user", lastRunId: run.id },
+  );
+  await context.models.aggregatedFactTables.releaseLock(key, run.executionId);
+
+  res.status(200).json({ status: 200 });
+};
+
 export const postColumnTopValues = async (
   req: AuthRequest<
     unknown,
@@ -451,8 +780,7 @@ export const postColumnTopValues = async (
 
   if (
     forceAutoSlice ||
-    ((column.alwaysInlineFilter || column.isAutoSliceColumn) &&
-      canInlineFilterColumn(factTable, column.column) &&
+    (canInlineFilterColumn(factTable, column.column) &&
       column.datatype === "string")
   ) {
     try {
@@ -488,14 +816,18 @@ export const postColumnTopValues = async (
         changes,
       });
     } catch (e) {
-      logger.error(e, "Error running top values query for specific column", {
-        column: req.params.column,
-      });
+      logger.error(
+        e,
+        `Error running top values query for specific column on ${datasource.type}`,
+        {
+          column: req.params.column,
+        },
+      );
       throw e;
     }
   } else {
     throw new Error(
-      "Column does not meet requirements for top values refresh (must be string type and have alwaysInlineFilter or isAutoSliceColumn enabled)",
+      "Column does not meet requirements for top values refresh (must be a string column and not a user-id type)",
     );
   }
 
@@ -564,7 +896,10 @@ export const putColumn = async (
           });
         })
         .catch((e) => {
-          logger.warn("Failed to get top values for column", e);
+          logger.warn(
+            `Failed to get top values for column on ${datasource.type}`,
+            e,
+          );
         });
     }
   }
@@ -733,7 +1068,7 @@ export const postFactMetric = async (
 };
 
 export const putFactMetric = async (
-  req: AuthRequest<Partial<FactMetricInterface>, { id: string }>,
+  req: AuthRequest<UpdateProps<FactMetricInterface>, { id: string }>,
   res: Response<{ status: 200 }>,
 ) => {
   const context = getContextFromReq(req);

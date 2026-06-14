@@ -63,6 +63,11 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
           .fn()
           .mockResolvedValue(new Map()) as jest.Mock,
       },
+      rampSchedules: {
+        getPayloadRampMonitoredRuleMap: jest
+          .fn()
+          .mockResolvedValue(new Map()) as jest.Mock,
+      },
       savedGroups: {
         getAll: jest.fn().mockResolvedValue([]),
         getByIds: jest.fn().mockResolvedValue([]),
@@ -83,6 +88,7 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
   });
 
   it("should include holdout and holdout rule when holdout has the requested project", async () => {
+    // Mock features
     (getAllFeatures as jest.Mock).mockResolvedValue([
       {
         id: "feature-with-holdout",
@@ -109,6 +115,7 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
       },
     ]);
 
+    // Mock holdouts
     (
       mockContext.models.holdout.getAllPayloadHoldouts as jest.Mock
     ).mockResolvedValue(
@@ -119,13 +126,15 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
             holdout: {
               id: "hld_test_holdout",
               name: "Test Holdout",
-              projects: ["project-2"],
+              projects: ["project-2"], // Same project as feature
               environment: "production",
               environmentSettings: {
-                production: { enabled: true },
+                production: {
+                  enabled: true,
+                },
               },
             },
-            experiment: {
+            holdoutExperiment: /* renamed from `experiment` on main */ {
               id: "exp_holdout",
               name: "Holdout Experiment",
               hashAttribute: "user_id",
@@ -239,7 +248,7 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
                 },
               },
             },
-            experiment: {
+            holdoutExperiment: /* renamed from `experiment` on main */ {
               id: "exp_holdout",
               name: "Holdout Experiment",
               hashAttribute: "user_id",
@@ -280,6 +289,7 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
   });
 
   it("should include holdout and holdout rule when requested project is in holdout projects array", async () => {
+    // Mock features
     (getAllFeatures as jest.Mock).mockResolvedValue([
       {
         id: "feature-with-holdout",
@@ -306,6 +316,7 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
       },
     ]);
 
+    // Mock holdouts
     (
       mockContext.models.holdout.getAllPayloadHoldouts as jest.Mock
     ).mockResolvedValue(
@@ -319,10 +330,12 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
               projects: ["project-2", "project-3"],
               environment: "production",
               environmentSettings: {
-                production: { enabled: true },
+                production: {
+                  enabled: true,
+                },
               },
             },
-            experiment: {
+            holdoutExperiment: /* renamed from `experiment` on main */ {
               id: "exp_holdout",
               name: "Holdout Experiment",
               hashAttribute: "user_id",
@@ -481,7 +494,7 @@ describe("getFeatureDefinitionsWithCache - Holdout Tests", () => {
                 },
               },
             },
-            experiment: {
+            holdoutExperiment: /* renamed from `experiment` on main */ {
               id: "exp_holdout",
               name: "Holdout Experiment",
               hashAttribute: "user_id",

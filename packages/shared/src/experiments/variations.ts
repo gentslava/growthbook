@@ -1,10 +1,22 @@
-import { Variation } from "shared/types/experiment";
+import {
+  ExperimentInterface,
+  ExperimentPhase,
+  Variation,
+  VariationStatus,
+} from "shared/types/experiment";
 
-type ExperimentWithVariations = {
-  variations: Variation[];
+type ExperimentWithVariations = Pick<ExperimentInterface, "variations">;
+
+type ExperimentWithVariationsAndPhases = ExperimentWithVariations & {
+  phases: Pick<ExperimentPhase, "variations">[];
 };
 
 type VariationWithIndex = Variation & {
+  index: number;
+};
+
+type VariationWithIndexAndStatus = Variation & {
+  status: VariationStatus;
   index: number;
 };
 
@@ -14,38 +26,50 @@ type VariationWithIndex = Variation & {
  * this will merge phase-level variation status with top-level metadata.
  */
 export function getLatestPhaseVariations(
-  experiment: ExperimentWithVariations,
-): VariationWithIndex[] {
-  const allVariations = getAllVariations(experiment);
+  experiment: ExperimentWithVariationsAndPhases,
+): VariationWithIndexAndStatus[] {
+  const latestPhaseIndex = experiment.phases.length - 1;
+  return getPhaseVariations(experiment, latestPhaseIndex);
+}
 
-  // TODO change to come from phase
-  const phaseVariations = experiment.variations;
+export function getPhaseVariations(
+  experiment: ExperimentWithVariationsAndPhases,
+  phaseIndex: number,
+): VariationWithIndexAndStatus[] {
+  const allVariations = getAllVariations(experiment);
+  const defaultResponse = allVariations.map((v, i) => ({
+    ...v,
+    index: i,
+    status: "active" as const,
+  }));
+
+  const phase = experiment.phases?.[phaseIndex];
+
+  // safe guard in case phase or variations are missing or are an empty array
+  if (!phase || !phase.variations || phase.variations.length === 0) {
+    return defaultResponse;
+  }
 
   let hasMissing = false;
-  const result: VariationWithIndex[] = phaseVariations.map((v, i) => {
+  const foundVariations: VariationWithIndexAndStatus[] = [];
+  for (const v of phase.variations) {
     const foundVariation = allVariations.find((allV) => allV.id === v.id);
     if (foundVariation === undefined) {
       hasMissing = true;
-      return {
-        ...v,
-        index: i,
-      };
+      break;
     }
-    return {
+    foundVariations.push({
       ...foundVariation,
-      // override experiment variation metadata with phase variation metadata, if present
-      ...v,
-    };
-  });
-  if (!hasMissing) {
-    return result;
+      // Add status from phase variation, if present
+      status: v.status,
+    });
+  }
+  // If any missing, fall back to all variations with status "active"
+  if (hasMissing) {
+    return defaultResponse;
   }
 
-  // Otherwise, return all variations with the index as the position in the array
-  return result.map((v, i) => ({
-    ...v,
-    index: i,
-  }));
+  return foundVariations;
 }
 
 /**

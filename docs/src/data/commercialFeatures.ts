@@ -177,6 +177,10 @@ export default {
     plan: "pro",
     displayName: "Quantile Metrics",
   },
+  "ramp-schedules": {
+    plan: "pro",
+    displayName: "Ramp Schedules",
+  },
   redirects: {
     plan: "pro",
     displayName: "Redirects",
@@ -196,6 +200,10 @@ export default {
   "require-project-for-features-setting": {
     plan: "enterprise",
     displayName: "Require Project For Features Setting",
+  },
+  "require-project-for-sdk-connections-setting": {
+    plan: "enterprise",
+    displayName: "Require Project For Sdk Connections Setting",
   },
   "retention-metrics": {
     plan: "pro",

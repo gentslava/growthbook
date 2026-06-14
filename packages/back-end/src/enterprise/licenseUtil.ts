@@ -19,7 +19,10 @@ import {
   SubscriptionInfo,
 } from "shared/enterprise";
 import { StripeAddress, TaxIdType } from "shared/types/subscriptions";
-import { OrganizationInterface } from "shared/types/organization";
+import {
+  OrganizationInterface,
+  OrgMemberInfo,
+} from "shared/types/organization";
 import { fetch } from "back-end/src/util/http.util";
 import { LicenseServerError } from "back-end/src/util/errors";
 import { getLicenseByKey, LicenseModel } from "./models/licenseModel";
@@ -27,7 +30,7 @@ import { LICENSE_PUBLIC_KEY } from "./public-key";
 
 export const LICENSE_SERVER_URL =
   process.env.LICENSE_SERVER_URL ||
-  "https://central_license_server.growthbook.io/api/v1/";
+  "https://central-license-server.growthbook.io/api/v1/";
 
 // mimic behavior in back-end/src/util/secrets.ts
 const APP_ORIGIN = process.env.APP_ORIGIN || "http://localhost:3000";
@@ -51,12 +54,16 @@ function getStripeSubscriptionStatus(
 export function getSubscriptionFromLicense(
   license: Partial<LicenseInterface>,
 ): SubscriptionInfo | null {
-  const sub = license.orbSubscription || license.stripeSubscription;
+  const orbSub = license.orbSubscription?.id ? license.orbSubscription : null;
+  const stripeSub = license.stripeSubscription?.id
+    ? license.stripeSubscription
+    : null;
+  const sub = orbSub || stripeSub;
 
   if (!sub) return null;
 
   return {
-    billingPlatform: license.orbSubscription ? "orb" : "stripe",
+    billingPlatform: orbSub ? "orb" : "stripe",
     externalId: sub.id,
     trialEnd: sub.trialEnd,
     status: getStripeSubscriptionStatus(sub.status),
@@ -500,6 +507,7 @@ export async function postNewProSubscriptionIntentToLicenseServer(
   companyName: string,
   ownerEmail: string,
   name: string,
+  options?: { radarSessionId?: string },
 ) {
   const url = `${LICENSE_SERVER_URL}subscription/setup-subscription-intent`;
   return await callLicenseServer({
@@ -511,6 +519,7 @@ export async function postNewProSubscriptionIntentToLicenseServer(
       companyName,
       ownerEmail,
       name,
+      radarSessionId: options?.radarSessionId,
     }),
   });
 }
@@ -639,8 +648,8 @@ async function getLicenseDataFromServer(
 
 async function updateLicenseFromServer(
   licenseKey: string,
-  org: MinimalOrganization,
-  getUserCodesForOrg: (org: MinimalOrganization) => Promise<LicenseUserCodes>,
+  org: OrgMemberInfo,
+  getUserCodesForOrg: (org: OrgMemberInfo) => Promise<LicenseUserCodes>,
   getLicenseMetaData: () => Promise<LicenseMetaData>,
   mongoCache: LicenseInterface | null,
 ) {
@@ -688,8 +697,8 @@ const keyToCacheDate: Record<string, Date> = {};
 export let backgroundUpdateLicenseFromServerForTests: Promise<void | LicenseInterface>;
 
 export async function licenseInit(
-  org?: MinimalOrganization,
-  getUserCodesForOrg?: (org: MinimalOrganization) => Promise<LicenseUserCodes>,
+  org?: OrgMemberInfo,
+  getUserCodesForOrg?: (org: OrgMemberInfo) => Promise<LicenseUserCodes>,
   getLicenseMetaData?: () => Promise<LicenseMetaData>,
   forceRefresh = false,
 ): Promise<Partial<LicenseInterface> | undefined> {

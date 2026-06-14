@@ -1,21 +1,36 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Box, Flex } from "@radix-ui/themes";
 import EChartsReact from "echarts-for-react";
+import * as echarts from "echarts/core";
 import type {
   ExplorationConfig,
   ProductAnalyticsExploration,
 } from "shared/validators";
+import { isManagedWarehousePendingQueryError } from "shared/util";
+import {
+  calculateProductAnalyticsDateRange,
+  getDateGranularity,
+} from "shared/enterprise";
 import {
   shouldChartSectionShow,
   getEffectiveMetricValue,
   computeDimensionTotals,
+  getIsRatioByIndex,
+  getEffectiveShowAs,
+  getSharedUnit,
+  showAsAppliesTo,
+  formatDateByGranularity,
+  type ResolvedGranularity,
+  type RenderOpts,
 } from "@/enterprise/components/ProductAnalytics/util";
 import { useAppearanceUITheme } from "@/services/AppearanceUIThemeProvider";
+import { useDefinitions } from "@/services/DefinitionsContext";
 import { useDashboardCharts } from "@/enterprise/components/Dashboards/DashboardChartsContext";
 import BigValueChart from "@/components/SqlExplorer/BigValueChart";
 import HelperText from "@/ui/HelperText";
 import Callout from "@/ui/Callout";
 import Text from "@/ui/Text";
+import ManagedWarehouseNoEventsCallout from "@/components/ManagedWarehouse/ManagedWarehouseNoEventsCallout";
 
 const CHART_ID = "explorer-chart";
 
@@ -54,11 +69,14 @@ export default function ExplorerChart({
   error,
   submittedExploreState,
   loading,
+  animate = true,
 }: {
   exploration: ProductAnalyticsExploration | null;
   error: string | null;
   submittedExploreState: ExplorationConfig;
   loading: boolean;
+  /** When false, ECharts entry animations are disabled (e.g. for already-seen charts). */
+  animate?: boolean;
 }) {
   const { theme } = useAppearanceUITheme();
   const textColor = theme === "dark" ? "#FFFFFF" : "#1F2D5C";
@@ -66,6 +84,46 @@ export default function ExplorerChart({
   const gridLineColor =
     theme === "dark" ? "rgba(255, 255, 255, 0.08)" : "rgba(0, 0, 0, 0.06)";
   const chartsContext = useDashboardCharts();
+  const { getFactMetricById } = useDefinitions();
+
+  // ECharts only auto-resizes on window resize, not when its parent container
+  // changes (e.g. a dashboard block being resized via react-grid-layout or the
+  // editing drawer collapsing). Observe the wrapper and call resize() so the
+  // chart always fills its block.
+  const chartWrapperRef = useRef<HTMLDivElement | null>(null);
+  const chartInstanceRef = useRef<echarts.ECharts | null>(null);
+  useEffect(() => {
+    const el = chartWrapperRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const chart = chartInstanceRef.current;
+      if (!chart || chart.isDisposed()) return;
+      chart.resize();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const renderOpts: RenderOpts = useMemo(
+    () => ({
+      showAs: getEffectiveShowAs(submittedExploreState, getFactMetricById),
+      isRatioByIndex: getIsRatioByIndex(
+        submittedExploreState,
+        getFactMetricById,
+      ),
+    }),
+    [submittedExploreState, getFactMetricById],
+  );
+
+  // Y-axis label: reflects whether we're rendering raw totals or per-unit
+  // averages. Only populated when showAs applies (otherwise the toggle is
+  // hidden and the number's meaning is carried by the metric/series name).
+  const valueAxisName = useMemo(() => {
+    if (!showAsAppliesTo(submittedExploreState, getFactMetricById)) return "";
+    if (renderOpts.showAs === "total") return "Total";
+    const sharedUnit = getSharedUnit(submittedExploreState);
+    return sharedUnit ? `Per ${sharedUnit}` : "Per unit";
+  }, [submittedExploreState, getFactMetricById, renderOpts.showAs]);
 
   // Transform ProductAnalyticsResult + exploreState to ECharts format
   const chartConfig = useMemo(() => {
@@ -76,6 +134,17 @@ export default function ExplorerChart({
     )
       return null;
     const rows = exploration.result.rows;
+
+    // Resolve date granularity for tooltip formatting
+    const dateDimension = submittedExploreState.dimensions?.find(
+      (d) => d.dimensionType === "date",
+    );
+    const resolvedGranularity: ResolvedGranularity | null = dateDimension
+      ? getDateGranularity(
+          dateDimension.dateGranularity,
+          calculateProductAnalyticsDateRange(submittedExploreState.dateRange),
+        )
+      : null;
     const chartType = submittedExploreState.chartType;
     const isHorizontalBar =
       chartType === "horizontalBar" || chartType === "stackedHorizontalBar";
@@ -83,10 +152,13 @@ export default function ExplorerChart({
       chartType === "stackedBar" || chartType === "stackedHorizontalBar";
 
     if (chartType === "bigNumber") {
-      let value = rows[0]?.values[0]?.numerator ?? 0;
-      if (rows[0]?.values[0]?.denominator) {
-        value /= rows[0]?.values[0]?.denominator;
-      }
+      const firstValue = rows[0]?.values[0];
+      const value = firstValue
+        ? getEffectiveMetricValue(firstValue, {
+            showAs: renderOpts.showAs,
+            isRatio: renderOpts.isRatioByIndex[0] ?? false,
+          })
+        : 0;
       return { type: "bigNumber" as const, value };
     }
 
@@ -139,7 +211,10 @@ export default function ExplorerChart({
           };
         }
 
-        dataMap[seriesKey][xValue] = getEffectiveMetricValue(v);
+        dataMap[seriesKey][xValue] = getEffectiveMetricValue(v, {
+          showAs: renderOpts.showAs,
+          isRatio: renderOpts.isRatioByIndex[valueIndex] ?? false,
+        });
       });
     });
 
@@ -165,7 +240,7 @@ export default function ExplorerChart({
     // Bar charts: sort categories by total value; timeseries: chronological
     let sortedXValues: string[];
     if (isBarType) {
-      const xValueTotals = computeDimensionTotals(rows, 0);
+      const xValueTotals = computeDimensionTotals(rows, 0, renderOpts);
       // Horizontal bars render bottom-to-top, so sort ascending for largest on top
       sortedXValues = Array.from(uniqueXValues).sort((a, b) =>
         isHorizontalBar
@@ -216,8 +291,8 @@ export default function ExplorerChart({
           data,
           color: seriesColor(idx),
           type: "line" as const,
-          animation: true,
-          animationDuration: 300,
+          animation: animate,
+          animationDuration: animate ? 300 : 0,
           animationEasing: "linear" as const,
           symbol: "circle" as const,
           symbolSize: 4,
@@ -227,6 +302,16 @@ export default function ExplorerChart({
           return { ...lineConfig, areaStyle: {}, stack: "stack" };
       }
     });
+
+    const axisPointerLabelFormatter = resolvedGranularity
+      ? (params: { value: string | number }) => {
+          const date =
+            typeof params.value === "number"
+              ? new Date(params.value)
+              : new Date(String(params.value));
+          return formatDateByGranularity(date, resolvedGranularity);
+        }
+      : undefined;
 
     // Define the category axis (shows the dimension labels)
     const categoryAxis = {
@@ -244,6 +329,15 @@ export default function ExplorerChart({
         rotate: isHorizontalBar ? 0 : -45,
         hideOverlap: true,
       },
+      // Only attach the axisPointer key when we actually have a formatter to
+      // apply. Setting `axisPointer: undefined` overwrites ECharts' default
+      ...(axisPointerLabelFormatter
+        ? {
+            axisPointer: {
+              label: { formatter: axisPointerLabelFormatter },
+            },
+          }
+        : {}),
       splitLine: { lineStyle: { color: gridLineColor, width: 1 } },
     };
 
@@ -251,7 +345,9 @@ export default function ExplorerChart({
     const valueAxis = {
       type: "value" as const,
       scale: false,
+      name: valueAxisName,
       nameLocation: "middle" as const,
+      nameGap: 50,
       nameTextStyle: {
         fontSize: 14,
         fontWeight: "bold",
@@ -265,6 +361,42 @@ export default function ExplorerChart({
     // Swap axes for horizontal bar
     const xAxis = isHorizontalBar ? valueAxis : categoryAxis;
     const yAxis = isHorizontalBar ? categoryAxis : valueAxis;
+
+    // Build a custom tooltip formatter that applies granularity-aware date formatting
+    const tooltipFormatter = resolvedGranularity
+      ? (params: unknown) => {
+          const items = (Array.isArray(params) ? params : [params]) as {
+            axisValue: string | number;
+            marker: string;
+            seriesName: string;
+            value: number | [number, number];
+          }[];
+          if (!items.length) return "";
+
+          // axisValue is a timestamp (ms) for time axis, raw string for category axis
+          const rawAxisValue = items[0].axisValue;
+          const date =
+            typeof rawAxisValue === "number"
+              ? new Date(rawAxisValue)
+              : new Date(String(rawAxisValue));
+          const header = formatDateByGranularity(date, resolvedGranularity);
+
+          const seriesRows = items
+            .map((item) => {
+              const numValue = Array.isArray(item.value)
+                ? item.value[1]
+                : item.value;
+              const formatted =
+                typeof numValue === "number"
+                  ? formatNumber(numValue)
+                  : String(numValue);
+              return `<div style="display:flex;justify-content:space-between;gap:16px"><span>${item.marker}${item.seriesName}</span><span><b>${formatted}</b></span></div>`;
+            })
+            .join("");
+
+          return `<div><div style="margin-bottom:4px">${header}</div>${seriesRows}</div>`;
+        }
+      : undefined;
 
     return {
       tooltip: {
@@ -283,6 +415,7 @@ export default function ExplorerChart({
             ? "shadow"
             : "cross",
         },
+        formatter: tooltipFormatter,
       },
       legend: {
         show: seriesConfigs.length > 1,
@@ -298,9 +431,12 @@ export default function ExplorerChart({
   }, [
     exploration?.result?.rows,
     submittedExploreState,
+    renderOpts,
     textColor,
     gridLineColor,
     tooltipBackgroundColor,
+    animate,
+    valueAxisName,
   ]);
 
   const hasEmptyData = useMemo(() => {
@@ -330,7 +466,11 @@ export default function ExplorerChart({
     >
       {error ? (
         <Box p="4">
-          <Callout status="error">{error}</Callout>
+          {isManagedWarehousePendingQueryError(error) ? (
+            <ManagedWarehouseNoEventsCallout />
+          ) : (
+            <Callout status="error">{error}</Callout>
+          )}
         </Box>
       ) : !exploration ? (
         <Flex
@@ -355,12 +495,7 @@ export default function ExplorerChart({
           </Text>
         </Flex>
       ) : chartConfig?.type === "bigNumber" ? (
-        <Flex
-          p="4"
-          style={{ flex: 1, minHeight: 0 }}
-          align="center"
-          justify="center"
-        >
+        <Flex style={{ flex: 1, minHeight: 0 }} align="center" justify="center">
           <BigValueChart
             value={chartConfig.value}
             formatter={formatNumber}
@@ -368,11 +503,15 @@ export default function ExplorerChart({
           />
         </Flex>
       ) : chartConfig ? (
-        <Box style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <Box
+          ref={chartWrapperRef}
+          style={{ flex: 1, minHeight: 0, position: "relative" }}
+        >
           <EChartsReact
             key={JSON.stringify(chartConfig)}
             option={{
               ...chartConfig,
+              ...(animate ? {} : { animation: false }),
               padding: [0, 0, 0, 0],
               grid: {
                 left:
@@ -387,6 +526,7 @@ export default function ExplorerChart({
             }}
             style={{ width: "100%", height: "100%" }}
             onChartReady={(chart) => {
+              chartInstanceRef.current = chart ?? null;
               if (chartsContext && chart) {
                 chartsContext.registerChart(CHART_ID, chart);
               }

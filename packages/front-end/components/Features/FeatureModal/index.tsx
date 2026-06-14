@@ -7,7 +7,9 @@ import {
 import React, { ReactElement, useState } from "react";
 import { validateFeatureValue } from "shared/util";
 import { PiInfo } from "react-icons/pi";
+import { Box, Flex } from "@radix-ui/themes";
 import { HoldoutSelect } from "@/components/Holdout/HoldoutSelect";
+import { useFeatureMetaInfo } from "@/hooks/useFeatureMetaInfo";
 import { useAuth } from "@/services/auth";
 import Modal from "@/components/Modal";
 import { useDefinitions } from "@/services/DefinitionsContext";
@@ -20,7 +22,6 @@ import {
 } from "@/services/features";
 import Tooltip from "@/components/Tooltip/Tooltip";
 import { useWatching } from "@/services/WatchProvider";
-import MarkdownInput from "@/components/Markdown/MarkdownInput";
 import { useDemoDataSourceProject } from "@/hooks/useDemoDataSourceProject";
 import CustomFieldInput from "@/components/CustomFields/CustomFieldInput";
 import {
@@ -33,6 +34,9 @@ import usePermissionsUtil from "@/hooks/usePermissionsUtils";
 import useProjectOptions from "@/hooks/useProjectOptions";
 import useOrgSettings from "@/hooks/useOrgSettings";
 import SelectField from "@/components/Forms/SelectField";
+import Callout from "@/ui/Callout";
+import Link from "@/ui/Link";
+import MarkdownInput from "@/components/Markdown/MarkdownInput";
 import FeatureKeyField from "./FeatureKeyField";
 import EnvironmentSelect from "./EnvironmentSelect";
 import TagsField from "./TagsField";
@@ -68,9 +72,8 @@ const genEnvironmentSettings = ({
       ? (featureToDuplicate?.environmentSettings?.[e.id]?.enabled ??
         defaultEnabled)
       : false;
-    const rules = featureToDuplicate?.environmentSettings?.[e.id]?.rules ?? [];
 
-    envSettings[e.id] = { enabled, rules };
+    envSettings[e.id] = { enabled };
   });
 
   return envSettings;
@@ -97,8 +100,10 @@ const genFormDefaultValues = ({
   | "project"
   | "id"
   | "environmentSettings"
+  | "rules"
   | "customFields"
   | "holdout"
+  | "jsonSchema"
 > => {
   const environmentSettings = genEnvironmentSettings({
     environments,
@@ -124,10 +129,12 @@ const genFormDefaultValues = ({
         project: featureToDuplicate.project ?? project,
         tags: featureToDuplicate.tags,
         environmentSettings,
+        rules: featureToDuplicate.rules ?? [],
         customFields: customFieldValues,
         holdout: featureToDuplicate.holdout?.id
           ? featureToDuplicate.holdout
           : undefined,
+        jsonSchema: featureToDuplicate.jsonSchema,
       }
     : {
         valueType: "" as FeatureValueType,
@@ -137,6 +144,7 @@ const genFormDefaultValues = ({
         project,
         tags: [],
         environmentSettings,
+        rules: [],
         customFields: customFieldValues,
         holdout: undefined,
       };
@@ -174,6 +182,11 @@ export default function FeatureModal({
       : undefined,
   });
 
+  const [showDescription, setShowDescription] = useState(
+    !!defaultValues.description?.length,
+  );
+  const [showTags, setShowTags] = useState(!!defaultValues.tags?.length);
+
   const form = useForm({ defaultValues });
 
   const projectOptions = useProjectOptions(
@@ -191,13 +204,11 @@ export default function FeatureModal({
     selectedProject,
   );
   const { projectId: demoProjectId } = useDemoDataSourceProject();
-
-  const [showTags, setShowTags] = useState(!!featureToDuplicate?.tags?.length);
-  const [showDescription, setShowDescription] = useState(
-    !!featureToDuplicate?.description?.length,
-  );
-
   const { apiCall } = useAuth();
+  // During early onboarding the holdouts promo is noise. We still want to show
+  // the real holdout selector if the org has set holdouts up.
+  const { features: allFeatures } = useFeatureMetaInfo();
+  const hideHoldoutPromo = allFeatures.length < 5;
 
   const valueType = form.watch("valueType") as FeatureValueType;
   const environmentSettings = form.watch("environmentSettings");
@@ -245,8 +256,13 @@ export default function FeatureModal({
           throw new Error("Please select a value type");
         }
 
+        // When duplicating, skip JSON schema validation since the value is
+        // copied verbatim from an existing feature and the user cannot edit it.
+        const featureForValidation = featureToDuplicate
+          ? { valueType: feature.valueType }
+          : feature;
         const newDefaultValue = validateFeatureValue(
-          feature,
+          featureForValidation,
           defaultValue,
           "Value",
         );
@@ -289,70 +305,25 @@ export default function FeatureModal({
     >
       <FormProvider {...form}>
         {currentProjectIsDemo && (
-          <div className="alert alert-warning">
+          <Callout status="warning" mb="3">
             You are creating a feature under the demo datasource project.
-          </div>
+          </Callout>
         )}
 
         <FeatureKeyField keyField={form.register("id")} />
 
-        {showTags ? (
-          <TagsField
-            value={form.watch("tags") || []}
-            onChange={(tags) => form.setValue("tags", tags)}
-          />
-        ) : (
-          <a
-            href="#"
-            className="badge badge-light badge-pill mr-3 mb-3"
-            onClick={(e) => {
-              e.preventDefault();
-              setShowTags(true);
-            }}
-          >
-            + tags
-          </a>
-        )}
-
-        {showDescription ? (
-          <div className="form-group">
-            <label>Description</label>
-            <MarkdownInput
-              value={form.watch("description") || ""}
-              setValue={(value) => form.setValue("description", value)}
-              autofocus={!featureToDuplicate?.description?.length}
-            />
-          </div>
-        ) : (
-          <a
-            href="#"
-            className="badge badge-light badge-pill mb-3"
-            onClick={(e) => {
-              e.preventDefault();
-              setShowDescription(true);
-            }}
-          >
-            + description
-          </a>
-        )}
-
         {projectOptions.length > 0 && (
           <>
             {selectedProject === demoProjectId && (
-              <div className="alert alert-warning">
+              <Callout status="warning" mb="3">
                 You are creating a feature under the demo datasource project.
-              </div>
+              </Callout>
             )}
             <SelectField
               label={
                 <>
-                  {" "}
                   Project{" "}
-                  <Tooltip
-                    body={
-                      "The dropdown below has been filtered to only include projects where you have permission to update Features"
-                    }
-                  />{" "}
+                  <Tooltip body="The dropdown below has been filtered to only include projects where you have permission to update Features" />
                 </>
               }
               value={selectedProject || ""}
@@ -373,23 +344,8 @@ export default function FeatureModal({
             form.setValue("holdout", { id: holdoutId, value: "" });
           }}
           formType="feature"
+          hideEmptyStatePromo={hideHoldoutPromo}
         />
-
-        {hasCommercialFeature("custom-metadata") &&
-          customFields &&
-          customFields?.length > 0 && (
-            <div>
-              <CustomFieldInput
-                customFields={customFields}
-                setCustomFields={(value) => {
-                  form.setValue("customFields", value);
-                }}
-                currentCustomFields={form.watch("customFields") || {}}
-                section={"feature"}
-                project={selectedProject}
-              />
-            </div>
-          )}
 
         {!featureToDuplicate && (
           <ValueTypeField
@@ -406,7 +362,7 @@ export default function FeatureModal({
           We hide rule configuration when duplicating a feature since the
           decision of which rule to display (out of potentially many) in the
           modal is not deterministic.
-      */}
+        */}
         {!featureToDuplicate && valueType && (
           <FeatureValueField
             label={
@@ -435,14 +391,66 @@ export default function FeatureModal({
           />
         )}
 
-        <EnvironmentSelect
-          environmentSettings={environmentSettings}
-          environments={environments}
-          setValue={(env, on) => {
-            environmentSettings[env.id].enabled = on;
-            form.setValue("environmentSettings", environmentSettings);
-          }}
-        />
+        <Box className="appbox bg-light" px="4" pt="4" pb="1" mb="3">
+          <EnvironmentSelect
+            environmentSettings={environmentSettings}
+            environments={environments}
+            project={selectedProject}
+            setValue={(env, on) => {
+              environmentSettings[env.id].enabled = on;
+              form.setValue("environmentSettings", environmentSettings);
+            }}
+          />
+        </Box>
+
+        {hasCommercialFeature("custom-metadata") &&
+          customFields &&
+          customFields?.length > 0 && (
+            <div>
+              <CustomFieldInput
+                customFields={customFields}
+                setCustomFields={(value) => {
+                  form.setValue("customFields", value);
+                }}
+                currentCustomFields={form.watch("customFields") || {}}
+                section={"feature"}
+                project={selectedProject}
+              />
+            </div>
+          )}
+
+        <Flex direction="column" mt="3">
+          {showTags && (
+            <TagsField
+              value={form.watch("tags") || []}
+              onChange={(tags) => form.setValue("tags", tags)}
+              autoFocus={!defaultValues.tags?.length}
+            />
+          )}
+          {showDescription && (
+            <div className="form-group" style={{ width: "100%" }}>
+              <label>Description</label>
+              <Box mt="1">
+                <MarkdownInput
+                  value={form.watch("description") || ""}
+                  setValue={(description) =>
+                    form.setValue("description", description)
+                  }
+                  autofocus={!defaultValues.description?.length}
+                />
+              </Box>
+            </div>
+          )}
+
+          <Flex gap="4">
+            {!showTags && <Link onClick={() => setShowTags(true)}>+ tags</Link>}
+            {!showDescription && (
+              <Link onClick={() => setShowDescription(true)}>
+                + description
+              </Link>
+            )}
+          </Flex>
+        </Flex>
       </FormProvider>
     </Modal>
   );

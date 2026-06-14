@@ -1,17 +1,33 @@
 import cloneDeep from "lodash/cloneDeep";
 import { evaluatePrerequisiteState } from "shared/util";
-import { FeatureInterface } from "shared/types/feature";
+import { FeatureInterface, FeatureRule } from "shared/types/feature";
 import { generateFeaturesPayload } from "back-end/src/services/features";
 
-// todo: temporarily suppressing scrubbed fields
-function scrubRuleIds(
-  rules: Record<string, unknown>[],
-): Record<string, unknown>[] {
-  return rules.map((r) => {
-    const rule = { ...r };
-    delete rule["id"];
-    return rule;
-  });
+// Test-local normalizer: these fixtures were authored in the v1 shape
+// (rules under environmentSettings[env].rules). The production JIT
+// migration (`migrateRawFeatureToV2`) handles this on read, but these
+// tests feed fixtures directly into generateFeaturesPayload. This helper
+// flattens v1 fixtures into v2 (`feature.rules` with per-env scope) so
+// the existing fixtures don't need a line-by-line rewrite.
+function normalizeV1Fixture(feature: FeatureInterface): FeatureInterface {
+  const flatRules: FeatureRule[] = [];
+  const es = feature.environmentSettings as unknown as Record<
+    string,
+    { enabled: boolean; rules?: FeatureRule[] }
+  >;
+  for (const [env, settings] of Object.entries(es ?? {})) {
+    for (const r of settings.rules ?? []) {
+      flatRules.push({
+        ...r,
+        allEnvironments: false,
+        environments: [env],
+      } as FeatureRule);
+    }
+  }
+  return {
+    ...feature,
+    rules: flatRules,
+  };
 }
 
 describe("Prerequisite reduction in SDK Payload", () => {
@@ -62,7 +78,7 @@ describe("Prerequisite reduction in SDK Payload", () => {
       cloneDeep(parentFeature),
     ];
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
@@ -85,7 +101,7 @@ describe("Prerequisite reduction in SDK Payload", () => {
       },
     ];
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
@@ -111,7 +127,7 @@ describe("Prerequisite reduction in SDK Payload", () => {
       },
     ];
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
@@ -147,7 +163,7 @@ describe("Prerequisite reduction in SDK Payload", () => {
       },
     ];
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
@@ -191,7 +207,7 @@ describe("Prerequisite reduction in SDK Payload", () => {
       },
     ];
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
@@ -234,7 +250,7 @@ describe("Prerequisite reduction in SDK Payload", () => {
       },
     ];
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
@@ -371,15 +387,13 @@ describe("Prerequisite reduction in SDK Payload", () => {
       },
     ];
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
       capabilities: [],
     });
-    expect(
-      scrubRuleIds(payload.child1.rules as Record<string, unknown>[]),
-    ).toStrictEqual([
+    expect(payload.child1.rules).toStrictEqual([
       {
         condition: { country: "US-1" },
         force: true,
@@ -560,16 +574,14 @@ describe("Prerequisite reduction in SDK Payload", () => {
     expect(parent1State.state).toEqual("conditional");
 
     const payload = generateFeaturesPayload({
-      features: features,
+      features: features.map(normalizeV1Fixture),
       environment: "production",
       groupMap: new Map(),
       experimentMap: new Map(),
       capabilities: ["prerequisites"],
     });
 
-    expect(
-      scrubRuleIds(payload.child1.rules as Record<string, unknown>[]),
-    ).toStrictEqual([
+    expect(payload.child1.rules).toStrictEqual([
       {
         condition: {
           country: "US-1",

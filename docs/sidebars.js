@@ -71,6 +71,8 @@ export default {
           collapsed: false,
           items: [
             "features/publishing-and-approval-flows", // Publishing & Approval Flows (NEW)
+            "features/saved-group-revisions-api", // Saved Group Revisions API (BETA)
+            "features/json-schema-validation", // JSON Schema Validation
             "features/stale-detection", // Stale Feature Detection
             "features/code-references", // Code References
             "features/diagnostics", // Feature Diagnostics
@@ -84,6 +86,16 @@ export default {
       label: "Data & Metrics",
       collapsed: true,
       items: [
+        {
+          type: "doc",
+          id: "experimentation-analysis/choose-your-data-path",
+          label: "Choose Your Data Path",
+        },
+        {
+          type: "doc",
+          id: "experimentation-analysis/managed-warehouse",
+          label: "Managed Warehouse",
+        },
         {
           type: "category",
           label: "Connecting to Your Data Warehouse",
@@ -290,11 +302,6 @@ export default {
         },
         {
           type: "doc",
-          id: "experimentation-analysis/managed-warehouse",
-          label: "Managed Warehouse",
-        },
-        {
-          type: "doc",
           id: "experimentation-analysis/event-forwarder",
           label: "Event Forwarder",
         },
@@ -474,10 +481,26 @@ export default {
       label: "Insights",
     },
     {
-      type: "doc",
-      id: "product-analytics",
+      type: "category",
       label: "Product Analytics",
       className: "pill-new",
+      collapsed: true,
+      link: {
+        type: "doc",
+        id: "product-analytics/index",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "product-analytics/explorer",
+          label: "Explorer",
+        },
+        {
+          type: "doc",
+          id: "product-analytics/dashboards",
+          label: "Dashboards",
+        },
+      ],
     },
     {
       type: "category",
@@ -1016,6 +1039,7 @@ export default {
         },
       ],
     },
+    { type: "doc", id: "lib/open-feature", label: "OpenFeature Providers" },
     { type: "doc", id: "lib/build-your-own", label: "Build Your Own" },
   ],
 };

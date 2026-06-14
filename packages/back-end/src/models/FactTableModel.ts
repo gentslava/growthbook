@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+import mongoose, { FilterQuery } from "mongoose";
 import uniqid from "uniqid";
 import { omit } from "lodash";
 import {
@@ -11,10 +11,11 @@ import {
   UpdateFactTableProps,
   ColumnInterface,
 } from "shared/types/fact-table";
-import { ApiFactTable, ApiFactTableFilter } from "shared/types/openapi";
+import { ApiFactTable, ApiFactTableFilter } from "shared/validators";
 import { ReqContext } from "back-end/types/request";
 import { ApiReqContext } from "back-end/types/api";
 import { promiseAllChunks } from "back-end/src/util/promise";
+import { projectFilterQuery } from "back-end/src/util/mongo.util";
 import { createModelAuditLogger } from "back-end/src/services/audit";
 
 const audit = createModelAuditLogger({
@@ -75,10 +76,27 @@ const factTableSchema = new mongoose.Schema({
   ],
   archived: Boolean,
   autoSliceUpdatesEnabled: Boolean,
+  aggregatedFactTableSettings: {
+    _id: false,
+    type: {
+      idTypes: [String],
+      updateTime: {
+        _id: false,
+        type: {
+          time: String,
+          timezone: String,
+        },
+      },
+      lookbackWindow: Number,
+    },
+    default: undefined,
+  },
   columnRefreshPending: Boolean,
 });
 
 factTableSchema.index({ id: 1, organization: 1 }, { unique: true });
+// Compound indexes for API list filtering
+factTableSchema.index({ organization: 1, datasource: 1 });
 
 type FactTableDocument = mongoose.Document & FactTableInterface;
 
@@ -139,14 +157,25 @@ function createPropsToInterface(
     columns,
     columnsError: null,
     managedBy: props.managedBy || "",
+    aggregatedFactTableSettings: props.aggregatedFactTableSettings ?? null,
     columnRefreshPending: props.columnRefreshPending || false,
   };
 }
 
 export async function getAllFactTablesForOrganization(
   context: ReqContext | ApiReqContext,
+  options?: {
+    datasourceId?: string;
+    projectId?: string;
+  },
 ) {
-  const docs = await FactTableModel.find({ organization: context.org.id });
+  const query: FilterQuery<FactTableInterface> = {
+    organization: context.org.id,
+    ...(options?.datasourceId && { datasource: options.datasourceId }),
+    ...(options?.projectId && projectFilterQuery(options.projectId)),
+  };
+
+  const docs = await FactTableModel.find(query).sort({ id: 1 });
   return docs
     .map((doc) => toInterface(doc))
     .filter((f) => context.permissions.canReadMultiProjectResource(f.projects));
@@ -223,6 +252,17 @@ export async function getAllFactTablesWithAutoSliceUpdatesEnabled(): Promise<
 > {
   const docs = await FactTableModel.find({
     autoSliceUpdatesEnabled: true,
+    archived: { $ne: true },
+  });
+  return docs.map((doc) => toInterface(doc));
+}
+
+// Across all organizations; used by the nightly aggregated fact table job.
+export async function getAllFactTablesWithAggregatedTablesEnabled(): Promise<
+  FactTableInterface[]
+> {
+  const docs = await FactTableModel.find({
+    "aggregatedFactTableSettings.idTypes": { $exists: true, $ne: [] },
     archived: { $ne: true },
   });
   return docs.map((doc) => toInterface(doc));
@@ -690,6 +730,8 @@ export function toFactTableApiInterface(
       topValuesDate: col.topValuesDate?.toISOString(),
     })),
     managedBy: factTable.managedBy || "",
+    aggregatedFactTableSettings:
+      factTable.aggregatedFactTableSettings ?? undefined,
     dateCreated: factTable.dateCreated?.toISOString() || "",
     dateUpdated: factTable.dateUpdated?.toISOString() || "",
   };

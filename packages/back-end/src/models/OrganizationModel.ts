@@ -1,9 +1,9 @@
 import mongoose from "mongoose";
 import uniqid from "uniqid";
 import { cloneDeep } from "lodash";
+import { z } from "zod";
 import { OWNER_JOB_TITLES, USAGE_INTENTS } from "shared/constants";
 import { POLICIES, RESERVED_ROLE_IDS } from "shared/permissions";
-import { z } from "zod";
 import {
   DemographicData,
   Invite,
@@ -14,7 +14,7 @@ import {
   OrgMemberInfo,
   Role,
 } from "shared/types/organization";
-import { ApiOrganization } from "shared/types/openapi";
+import { ApiOrganization } from "shared/validators";
 import { upgradeOrganizationDoc } from "back-end/src/util/migrations";
 import { IS_CLOUD } from "back-end/src/util/secrets";
 import {
@@ -83,6 +83,7 @@ const organizationSchema = new mongoose.Schema({
       ...baseMemberFields,
       email: String,
       key: String,
+      invitedBy: String,
     },
   ],
   pendingMembers: [
@@ -142,6 +143,7 @@ const organizationSchema = new mongoose.Schema({
   customRoles: {},
   deactivatedRoles: [],
   disabled: Boolean,
+  suspended: Boolean,
   setupEventTracker: String,
   trackingDisabled: Boolean,
 });
@@ -229,25 +231,23 @@ export async function createOrganization({
         { property: "utmContent", datatype: "string" },
       ],
       disablePrecomputedDimensions: false,
+      restApiBypassesReviews: false,
+      requireReviews: [
+        {
+          requireReviewOn: false,
+          resetReviewOnChange: false,
+          environments: [],
+          projects: [],
+          featureRequireEnvironmentReview: true,
+          featureRequireMetadataReview: false,
+        },
+      ],
     },
     getStartedChecklistItems: [],
     isVercelIntegration,
     ...(restrictLoginMethod ? { restrictLoginMethod } : {}),
   });
   return toInterface(doc);
-}
-
-export async function getOrganizationIdsWithTrackingDisabled(
-  organizationIds: string[],
-) {
-  const orgs = await OrganizationModel.find(
-    {
-      id: { $in: organizationIds },
-      trackingDisabled: true,
-    },
-    { id: 1, _id: 0 },
-  );
-  return new Set(orgs.map((org) => org.id));
 }
 
 export async function findAllOrganizations(
@@ -279,13 +279,6 @@ export async function findAllOrganizations(
     : OrganizationModel.find().estimatedDocumentCount());
 
   return { organizations: docs.map(toInterface), total };
-}
-
-export async function _dangerouslyFindAllOrganizationsByIds(orgIds: string[]) {
-  const docs = await OrganizationModel.find({
-    id: { $in: orgIds },
-  });
-  return docs.map(toInterface);
 }
 
 export async function findOrganizationById(id: string) {

@@ -10,122 +10,17 @@
 
 import cloneDeep from "lodash/cloneDeep";
 import { FeatureInterface } from "shared/types/feature";
-import { ExperimentInterface } from "shared/types/experiment";
-import { HoldoutInterface } from "shared/validators";
-import { GroupMap, SavedGroupInterface } from "shared/types/saved-group";
-import { SafeRolloutInterface } from "shared/types/safe-rollout";
-import { OrganizationInterface } from "shared/types/organization";
-import {
-  FeatureDefinition,
-  FeatureDefinitionWithProject,
-} from "shared/types/sdk";
-import { SDKCapability } from "shared/sdk-versioning";
 import { SDKConnectionInterface } from "shared/types/sdk-connection";
 import { ApiReqContext } from "back-end/types/api";
 import { ReqContext } from "back-end/types/request";
 import {
-  getFeatureDefinitions,
-  getFeatureDefinitionsResponse,
-  generateFeaturesPayload,
-  generateAutoExperimentsPayload,
+  buildSDKPayloadForConnection,
   isSDKConnectionAffectedByPayloadKey,
   queueSDKPayloadRefresh,
   refreshSDKPayloadCache,
-  type VisualExperiment,
-  type URLRedirectExperiment,
+  type SDKPayloadRawData,
+  type ConnectionPayloadOptions,
 } from "back-end/src/services/features";
-
-// todo: SDKPayloadRawData and ConnectionPayloadOptions are feature-branch types not yet on main;
-// these local definitions mirror the feature branch — remove after bryce/single-pass-payload-generation merges
-type SDKPayloadRawData = {
-  features: FeatureInterface[];
-  experimentMap: Map<string, ExperimentInterface>;
-  groupMap: GroupMap;
-  safeRolloutMap: Map<string, SafeRolloutInterface>;
-  savedGroups: SavedGroupInterface[];
-  holdoutsMap: Map<
-    string,
-    { holdout: HoldoutInterface; experiment: ExperimentInterface }
-  >;
-  visualExperiments?: VisualExperiment[];
-  urlRedirectExperiments?: URLRedirectExperiment[];
-};
-type ConnectionPayloadOptions = {
-  capabilities: SDKCapability[];
-  environment: string;
-  projects: string[] | null;
-  includeRuleIds?: boolean;
-  includeExperimentNames?: boolean;
-  encryptPayload?: boolean;
-  encryptionKey?: string;
-  savedGroupReferencesEnabled?: boolean;
-  hashSecureAttributes?: boolean;
-  includeVisualExperiments?: boolean;
-  includeDraftExperiments?: boolean;
-  includeRedirectExperiments?: boolean;
-};
-
-// todo: shim for buildSDKPayloadForConnection — not yet on main; chains generateFeaturesPayload +
-// generateAutoExperimentsPayload + getFeatureDefinitionsResponse to produce equivalent output.
-// Remove after bryce/single-pass-payload-generation merges.
-async function buildSDKPayloadForConnectionShim({
-  context,
-  connection,
-  data,
-}: {
-  context: ApiReqContext;
-  connection: ConnectionPayloadOptions;
-  data: SDKPayloadRawData;
-}) {
-  if (connection.projects === null) {
-    return {
-      features: {} as Record<string, FeatureDefinition>,
-      experiments: [] as unknown[],
-      dateUpdated: new Date(),
-    };
-  }
-
-  const features = generateFeaturesPayload({
-    features: data.features,
-    environment: connection.environment,
-    groupMap: data.groupMap,
-    experimentMap: data.experimentMap,
-    safeRolloutMap: data.safeRolloutMap,
-    holdoutsMap: data.holdoutsMap,
-  }) as Record<string, FeatureDefinitionWithProject>;
-
-  const experiments = generateAutoExperimentsPayload({
-    visualExperiments: data.visualExperiments ?? [],
-    urlRedirectExperiments: data.urlRedirectExperiments ?? [],
-    groupMap: data.groupMap,
-    features: data.features,
-    environment: connection.environment,
-  });
-
-  return getFeatureDefinitionsResponse({
-    features,
-    experiments,
-    holdouts: {},
-    projects: connection.projects,
-    dateUpdated: new Date(),
-    encryptionKey: connection.encryptPayload
-      ? connection.encryptionKey
-      : undefined,
-    includeVisualExperiments: connection.includeVisualExperiments,
-    includeDraftExperiments: connection.includeDraftExperiments,
-    includeExperimentNames: connection.includeExperimentNames,
-    includeRedirectExperiments: connection.includeRedirectExperiments,
-    includeRuleIds: connection.includeRuleIds,
-    savedGroupReferencesEnabled: connection.savedGroupReferencesEnabled,
-    capabilities: connection.capabilities,
-    usedSavedGroups: data.savedGroups ?? [],
-    organization: context.org as OrganizationInterface,
-  });
-}
-import {
-  getFeatureDefinitionsWithCache,
-  getPayloadParamsFromApiKey,
-} from "back-end/src/controllers/features";
 import * as FeatureModel from "back-end/src/models/FeatureModel";
 import * as ExperimentModel from "back-end/src/models/ExperimentModel";
 
@@ -135,8 +30,10 @@ jest.mock("back-end/src/models/SdkConnectionModel", () => ({
   markSDKConnectionUsed: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock("back-end/src/models/OrganizationModel", () => ({}));
-jest.mock("back-end/src/models/ApiKeyModel", () => ({
-  lookupOrganizationByApiKey: jest.fn(),
+jest.mock("back-end/src/models/ApiKeyModel", () => ({}));
+jest.mock("back-end/src/util/api-key.util", () => ({
+  ...jest.requireActual("back-end/src/util/api-key.util"),
+  dangerousLookupOrganizationByApiKey: jest.fn(),
 }));
 jest.mock("back-end/src/models/SdkConnectionCacheModel", () => ({
   ...jest.requireActual("back-end/src/models/SdkConnectionCacheModel"),
@@ -168,17 +65,7 @@ jest.mock("back-end/src/services/organizations", () => ({
 jest.mock("back-end/src/jobs/updateAllJobs", () => ({
   triggerWebhookJobs: jest.fn().mockResolvedValue(undefined),
 }));
-jest.mock("back-end/src/services/features", () => ({
-  ...jest.requireActual("back-end/src/services/features"),
-  getFeatureDefinitions: jest.fn(),
-}));
 
-const findSDKConnectionByKey = jest.requireMock(
-  "back-end/src/models/SdkConnectionModel",
-).findSDKConnectionByKey as jest.Mock;
-const lookupOrganizationByApiKey = jest.requireMock(
-  "back-end/src/models/ApiKeyModel",
-).lookupOrganizationByApiKey as jest.Mock;
 const getSDKPayloadCacheLocationMock = jest.requireMock(
   "back-end/src/models/SdkConnectionCacheModel",
 ).getSDKPayloadCacheLocation as jest.Mock;
@@ -294,168 +181,8 @@ describe("SDK payload lifecycle (comprehensive)", () => {
     });
   });
 
-  describe("getFeatureDefinitionsWithCache", () => {
-    const mockGetById = jest.fn();
-    const mockUpsert = jest.fn().mockResolvedValue(undefined);
-
-    it("returns parsed cache when storage !== none and getById returns content", async () => {
-      getSDKPayloadCacheLocationMock.mockReturnValue("mongodb");
-      const cached = {
-        features: { f1: { defaultValue: "cached" } },
-        dateUpdated: new Date().toISOString(),
-      };
-      mockGetById.mockResolvedValueOnce({ contents: JSON.stringify(cached) });
-
-      const ctx = minimalContext({
-        models: {
-          ...minimalContext().models,
-          sdkConnectionCache: { getById: mockGetById, upsert: mockUpsert },
-        },
-      } as ReqContext["models"]);
-
-      const defs = await getFeatureDefinitionsWithCache({
-        context: ctx as ReqContext,
-        params: {
-          key: "sdk-conn-1",
-          organization: "org-1",
-          environment: "production",
-          projects: [],
-          languages: ["javascript"],
-          sdkVersion: "1.0.0",
-        },
-      });
-
-      expect(mockGetById).toHaveBeenCalledWith("sdk-conn-1");
-      expect(defs.features).toEqual({ f1: { defaultValue: "cached" } });
-      expect(mockUpsert).not.toHaveBeenCalled();
-    });
-
-    it("on cache miss calls getFeatureDefinitions and upserts with params.key", async () => {
-      getSDKPayloadCacheLocationMock.mockReturnValue("mongodb");
-      mockGetById.mockResolvedValueOnce(null);
-      (getFeatureDefinitions as jest.Mock).mockResolvedValueOnce({
-        features: { f1: { defaultValue: "generated" } },
-        dateUpdated: new Date(),
-        experiments: [],
-      });
-
-      const ctx = minimalContext({
-        models: {
-          ...minimalContext().models,
-          sdkConnectionCache: { getById: mockGetById, upsert: mockUpsert },
-          savedGroups: { getAll: jest.fn().mockResolvedValue([]) },
-          safeRollout: {
-            getAllPayloadSafeRollouts: jest.fn().mockResolvedValue(new Map()),
-          },
-          holdout: {
-            getAllPayloadHoldouts: jest.fn().mockResolvedValue(new Map()),
-          },
-        },
-      } as ReqContext["models"]);
-
-      await getFeatureDefinitionsWithCache({
-        context: ctx as ReqContext,
-        params: {
-          key: "sdk-miss-key",
-          organization: "org-1",
-          environment: "production",
-          projects: [],
-          languages: ["javascript"],
-          sdkVersion: "1.0.0",
-        },
-      });
-
-      expect(getFeatureDefinitions).toHaveBeenCalled();
-      expect(mockUpsert).toHaveBeenCalledWith(
-        "sdk-miss-key",
-        expect.any(String),
-        expect.objectContaining({ event: "cache-miss" }),
-      );
-    });
-
-    it("when storage is none skips cache read and write", async () => {
-      getSDKPayloadCacheLocationMock.mockReturnValue("none");
-      (getFeatureDefinitions as jest.Mock).mockResolvedValueOnce({
-        features: {},
-        dateUpdated: new Date(),
-        experiments: [],
-      });
-
-      const ctx = minimalContext({
-        models: {
-          ...minimalContext().models,
-          sdkConnectionCache: { getById: mockGetById, upsert: mockUpsert },
-          savedGroups: { getAll: jest.fn().mockResolvedValue([]) },
-          safeRollout: {
-            getAllPayloadSafeRollouts: jest.fn().mockResolvedValue(new Map()),
-          },
-          holdout: {
-            getAllPayloadHoldouts: jest.fn().mockResolvedValue(new Map()),
-          },
-        },
-      } as ReqContext["models"]);
-
-      await getFeatureDefinitionsWithCache({
-        context: ctx as ReqContext,
-        params: {
-          key: "any",
-          organization: "org-1",
-          environment: "production",
-          projects: [],
-          languages: ["javascript"],
-          sdkVersion: "1.0.0",
-        },
-      });
-
-      expect(mockGetById).not.toHaveBeenCalled();
-      expect(mockUpsert).not.toHaveBeenCalled();
-      expect(getFeatureDefinitions).toHaveBeenCalled();
-    });
-  });
-
-  describe("getPayloadParamsFromApiKey", () => {
-    it("sdk-* key returns connection params from findSDKConnectionByKey", async () => {
-      const connection = {
-        key: "sdk-abc",
-        organization: "org-1",
-        environment: "production",
-        projects: ["p1"],
-        languages: ["javascript"],
-        sdkVersion: "1.0.0",
-      } as SDKConnectionInterface;
-      findSDKConnectionByKey.mockResolvedValue(connection);
-
-      const params = await getPayloadParamsFromApiKey("sdk-abc", {} as never);
-      expect(findSDKConnectionByKey).toHaveBeenCalledWith("sdk-abc");
-      expect(params.key).toBe("sdk-abc");
-      expect(params.organization).toBe("org-1");
-      expect(params.environment).toBe("production");
-      expect(params.languages).toEqual(["javascript"]);
-    });
-
-    // todo: getPayloadParamsFromApiKey calls dangerousLookupOrganizationByApiKey (not mocked); will align after bryce/single-pass-payload-generation merges
-    it.skip("non-sdk key uses lookupOrganizationByApiKey and formatLegacyCacheKey", async () => {
-      lookupOrganizationByApiKey.mockResolvedValue({
-        organization: "org-1",
-        secret: false,
-        environment: "production",
-        project: "proj1",
-        encryptSDK: false,
-        encryptionKey: "",
-      });
-      const params = await getPayloadParamsFromApiKey("pk_legacy", {
-        query: {},
-      } as never);
-      expect(lookupOrganizationByApiKey).toHaveBeenCalledWith("pk_legacy");
-      expect(params.key).toMatch(/^legacy:/);
-      expect(params.languages).toEqual(["legacy"]);
-      expect(params.sdkVersion).toBe("0.0.0");
-    });
-  });
-
   describe("refreshSDKPayloadCache", () => {
-    // todo: refreshSDKPayloadCache bulk path requires buildSDKPayloadForConnection not yet on main; unskip after bryce/single-pass-payload-generation merges
-    it.skip("bulk path: deleteAllLegacyCacheEntries, load rawData once, findSDKConnectionsByOrganization, build+upsert per connection, triggerWebhookJobs", async () => {
+    it("bulk path: deleteAllLegacyCacheEntries, load rawData once, findSDKConnectionsByOrganization, build+upsert per connection, triggerWebhookJobs", async () => {
       getSDKPayloadCacheLocationMock.mockReturnValue("mongo");
       const deleteAllLegacy = jest.fn().mockResolvedValue(undefined);
       const upsert = jest.fn().mockResolvedValue(undefined);
@@ -494,6 +221,11 @@ describe("SDK payload lifecycle (comprehensive)", () => {
         savedGroups: { getAll: jest.fn().mockResolvedValue([]) },
         holdout: {
           getAllPayloadHoldouts: jest.fn().mockResolvedValue(new Map()),
+        },
+        rampSchedules: {
+          getPayloadRampMonitoredRuleMap: jest
+            .fn()
+            .mockResolvedValue(new Map()),
         },
       };
       (
@@ -559,6 +291,11 @@ describe("SDK payload lifecycle (comprehensive)", () => {
         holdout: {
           getAllPayloadHoldouts: jest.fn().mockResolvedValue(new Map()),
         },
+        rampSchedules: {
+          getPayloadRampMonitoredRuleMap: jest
+            .fn()
+            .mockResolvedValue(new Map()),
+        },
       };
       (
         global as unknown as { __mockContextModels: unknown }
@@ -617,8 +354,7 @@ describe("SDK payload lifecycle (comprehensive)", () => {
         projects: [],
       };
 
-      // todo: using shim for buildSDKPayloadForConnection — remove after bryce/single-pass-payload-generation merges
-      await buildSDKPayloadForConnectionShim({
+      await buildSDKPayloadForConnection({
         context: ctx,
         connection: conn1,
         data: rawData,
@@ -627,7 +363,7 @@ describe("SDK payload lifecycle (comprehensive)", () => {
         length: rawData.features.length,
         id: rawData.features[0]?.id,
       };
-      await buildSDKPayloadForConnectionShim({
+      await buildSDKPayloadForConnection({
         context: ctx,
         connection: conn2,
         data: rawData,
@@ -670,6 +406,11 @@ describe("SDK payload lifecycle (comprehensive)", () => {
         savedGroups: { getAll: jest.fn().mockResolvedValue([]) },
         holdout: {
           getAllPayloadHoldouts: jest.fn().mockResolvedValue(new Map()),
+        },
+        rampSchedules: {
+          getPayloadRampMonitoredRuleMap: jest
+            .fn()
+            .mockResolvedValue(new Map()),
         },
       };
       (
@@ -724,6 +465,11 @@ describe("SDK payload lifecycle (comprehensive)", () => {
         savedGroups: { getAll: jest.fn().mockResolvedValue([]) },
         holdout: {
           getAllPayloadHoldouts: jest.fn().mockResolvedValue(new Map()),
+        },
+        rampSchedules: {
+          getPayloadRampMonitoredRuleMap: jest
+            .fn()
+            .mockResolvedValue(new Map()),
         },
       };
       (

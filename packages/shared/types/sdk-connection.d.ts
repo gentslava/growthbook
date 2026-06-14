@@ -25,9 +25,14 @@ export type EditSDKConnectionParams = {
   hashSecureAttributes?: boolean;
   includeVisualExperiments?: boolean;
   includeDraftExperiments?: boolean;
+  includeDraftExperimentRefs?: boolean;
   includeExperimentNames?: boolean;
   includeRedirectExperiments?: boolean;
   includeRuleIds?: boolean;
+  includeProjectIdInMetadata?: boolean;
+  includeCustomFieldsInMetadata?: boolean;
+  allowedCustomFieldsInMetadata?: string[];
+  includeTagsInMetadata?: boolean;
   remoteEvalEnabled?: boolean;
   eventTracker?: string;
 };
@@ -44,9 +49,14 @@ export type CreateSDKConnectionParams = {
   hashSecureAttributes: boolean;
   includeVisualExperiments: boolean;
   includeDraftExperiments: boolean;
+  includeDraftExperimentRefs?: boolean;
   includeExperimentNames: boolean;
   includeRedirectExperiments: boolean;
   includeRuleIds: boolean;
+  includeProjectIdInMetadata: boolean;
+  includeCustomFieldsInMetadata: boolean;
+  allowedCustomFieldsInMetadata: string[];
+  includeTagsInMetadata: boolean;
   remoteEvalEnabled?: boolean;
   managedBy?: ManagedBy;
 };
@@ -76,9 +86,14 @@ export interface SDKConnectionInterface {
   hashSecureAttributes?: boolean;
   includeVisualExperiments?: boolean;
   includeDraftExperiments?: boolean;
+  includeDraftExperimentRefs?: boolean;
   includeExperimentNames?: boolean;
   includeRedirectExperiments?: boolean;
   includeRuleIds?: boolean;
+  includeProjectIdInMetadata?: boolean;
+  includeCustomFieldsInMetadata?: boolean;
+  allowedCustomFieldsInMetadata?: string[];
+  includeTagsInMetadata?: boolean;
 
   // URL slug for fetching features from the API
   key: string;

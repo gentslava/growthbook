@@ -1,12 +1,48 @@
 import { format as sqlFormat } from "sql-formatter";
 import { SqlResultChunkInterface } from "../types/query";
-import { FormatDialect } from "../types/sql";
+import { FormatDialect, StringMatchFn } from "../types/sql";
 import { FormatError } from "../types/error";
+import { parseEnvInt } from "./util/numbers";
+
+/**
+ * Creates a function that builds a string-match condition (LIKE or a warehouse-native equivalent).
+ *
+ * This is needed because in some dialects, _ and \ are treated as wildcard characters for LIKE,
+ * and we want to escape them correctly to we can match them literally.
+ */
+export function createLikeStringMatchFn({
+  escapeStringLiteral,
+  escapeWildcards = (value: string) => value.replace(/([%_\\])/g, "\\$1"),
+  emitEscapeClause,
+}: {
+  escapeStringLiteral: (s: string) => string;
+  escapeWildcards?: (s: string) => string;
+  emitEscapeClause: boolean;
+}): StringMatchFn {
+  return (columnExpr, operator, value) => {
+    const pattern = escapeStringLiteral(escapeWildcards(value));
+    const escapeClause = emitEscapeClause
+      ? ` ESCAPE '${escapeStringLiteral("\\")}'`
+      : "";
+    switch (operator) {
+      case "starts_with":
+        return `${columnExpr} LIKE '${pattern}%'${escapeClause}`;
+      case "ends_with":
+        return `${columnExpr} LIKE '%${pattern}'${escapeClause}`;
+      case "contains":
+        return `${columnExpr} LIKE '%${pattern}%'${escapeClause}`;
+      case "not_contains":
+        return `${columnExpr} NOT LIKE '%${pattern}%'${escapeClause}`;
+    }
+  };
+}
 
 export const SQL_ROW_LIMIT = 1000;
 
-export const MAX_SQL_LENGTH_TO_FORMAT = parseInt(
-  process.env.MAX_SQL_LENGTH_TO_FORMAT || "15000",
+export const MAX_SQL_LENGTH_TO_FORMAT = parseEnvInt(
+  process.env.MAX_SQL_LENGTH_TO_FORMAT,
+  15_000,
+  { min: 1, name: "MAX_SQL_LENGTH_TO_FORMAT" },
 );
 
 export function format(
@@ -206,7 +242,12 @@ export function encodeSQLResults(
     return [];
   }
 
-  const columns = Object.keys(results[0]);
+  const columns = Array.from(
+    results.reduce((acc, row) => {
+      Object.keys(row).forEach((column) => acc.add(column));
+      return acc;
+    }, new Set<string>()),
+  );
   const encodedResults: SqlResultChunkData[] = [];
 
   function createChunk(): SqlResultChunkData {
@@ -236,7 +277,7 @@ export function encodeSQLResults(
   for (const row of results) {
     currentChunk.numRows++;
     for (const col of columns) {
-      const value = row[col];
+      const value = row[col] ?? null;
       currentChunk.data[col].push(value);
       currentChunkSize += getSize(value);
     }

@@ -5,6 +5,19 @@ import { FeatureInterface, ExperimentRefRule } from "shared/types/feature";
 
 import { isFeatureStale } from "../../src/util";
 
+type StaleOpts = Parameters<typeof isFeatureStale>[0];
+
+function testStale(
+  opts: Omit<StaleOpts, "features" | "environments"> &
+    Partial<Pick<StaleOpts, "features" | "environments">>,
+) {
+  return isFeatureStale({
+    features: [opts.feature],
+    environments: Object.keys(opts.feature.environmentSettings),
+    ...opts,
+  });
+}
+
 const genMockExperiment = ({
   id,
   status,
@@ -75,7 +88,6 @@ describe("isFeatureStale", () => {
 
   beforeEach(() => {
     feature = {
-      hasDrafts: false,
       version: 1,
       dateCreated: new Date("2020-04-20"),
       dateUpdated: new Date("2020-04-20"),
@@ -103,11 +115,10 @@ describe("isFeatureStale", () => {
   });
 
   describe("if the feature has a draft revision", () => {
-    beforeEach(() => {
-      feature.hasDrafts = true;
-    });
     it("is not stale", () => {
-      expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+      expect(
+        testStale({ feature, mostRecentDraftDate: new Date() }),
+      ).toMatchObject({ stale: false });
     });
   });
 
@@ -133,13 +144,13 @@ describe("isFeatureStale", () => {
     describe("and has been updated within past two weeks", () => {
       it("is not stale", () => {
         feature.dateUpdated = subWeeks(new Date(), 1);
-        expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+        expect(testStale({ feature })).toMatchObject({ stale: false });
       });
     });
     describe("and has not been updated within past two weeks", () => {
       it("is not stale (no active environments to evaluate)", () => {
         feature.dateUpdated = subWeeks(new Date(), 3);
-        expect(isFeatureStale({ feature })).toMatchObject({
+        expect(testStale({ feature })).toMatchObject({
           stale: false,
         });
       });
@@ -151,7 +162,7 @@ describe("isFeatureStale", () => {
       describe("and has been updated within past two weeks", () => {
         it("is not stale", () => {
           feature.dateUpdated = subWeeks(new Date(), 1);
-          expect(isFeatureStale({ feature })).toMatchObject({
+          expect(testStale({ feature })).toMatchObject({
             stale: false,
             reason: "never-stale",
           });
@@ -160,7 +171,7 @@ describe("isFeatureStale", () => {
       describe("and has not been updated within past two weeks", () => {
         it("is not stale", () => {
           feature.dateUpdated = subWeeks(new Date(), 3);
-          expect(isFeatureStale({ feature })).toMatchObject({
+          expect(testStale({ feature })).toMatchObject({
             stale: false,
             reason: "never-stale",
           });
@@ -180,13 +191,13 @@ describe("isFeatureStale", () => {
     describe("and has been updated within past two weeks", () => {
       it("is not stale", () => {
         feature.dateUpdated = subWeeks(new Date(), 1);
-        expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+        expect(testStale({ feature })).toMatchObject({ stale: false });
       });
     });
     describe("and has not been updated within past two weeks", () => {
       it("is stale", () => {
         feature.dateUpdated = subWeeks(new Date(), 3);
-        expect(isFeatureStale({ feature })).toMatchObject({
+        expect(testStale({ feature })).toMatchObject({
           stale: true,
           reason: "no-rules",
         });
@@ -237,13 +248,13 @@ describe("isFeatureStale", () => {
         describe("and has been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 1);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
         describe("and has not been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 3);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
       });
@@ -283,13 +294,13 @@ describe("isFeatureStale", () => {
         describe("and has been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 1);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
         describe("and has not been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 3);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
       });
@@ -333,13 +344,13 @@ describe("isFeatureStale", () => {
         describe("and has been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 1);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
         describe("and has not been updated within past two weeks", () => {
           it("is stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 3);
-            expect(isFeatureStale({ feature })).toMatchObject({
+            expect(testStale({ feature })).toMatchObject({
               stale: true,
               reason: "rules-one-sided",
             });
@@ -388,13 +399,13 @@ describe("isFeatureStale", () => {
         describe("and has been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 1);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
         describe("and has not been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 3);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
       });
@@ -441,13 +452,13 @@ describe("isFeatureStale", () => {
         describe("and has been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 1);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
         describe("and has not been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 3);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
       });
@@ -489,14 +500,14 @@ describe("isFeatureStale", () => {
         describe("and has been updated within past two weeks", () => {
           it("is not stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 1);
-            expect(isFeatureStale({ feature })).toMatchObject({ stale: false });
+            expect(testStale({ feature })).toMatchObject({ stale: false });
           });
         });
         describe("and has not been updated within past two weeks", () => {
           it("is stale", () => {
             feature.dateUpdated = subWeeks(new Date(), 3);
             // dev has no rules ("no-rules"), staging has one-sided rule; no-rules takes priority
-            expect(isFeatureStale({ feature })).toMatchObject({
+            expect(testStale({ feature })).toMatchObject({
               stale: true,
               reason: "no-rules",
             });
@@ -557,7 +568,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature })).toMatchObject({
+                expect(testStale({ feature })).toMatchObject({
                   stale: false,
                 });
               });
@@ -566,7 +577,7 @@ describe("isFeatureStale", () => {
               it("is stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
                 // staging has no rules → "no-rules" takes priority over "rules-one-sided"
-                expect(isFeatureStale({ feature })).toMatchObject({
+                expect(testStale({ feature })).toMatchObject({
                   stale: true,
                   reason: "no-rules",
                 });
@@ -643,7 +654,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -651,7 +662,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: true,
                   reason: "rules-one-sided",
                 });
@@ -728,7 +739,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -736,7 +747,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -792,7 +803,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature })).toMatchObject({
+                expect(testStale({ feature })).toMatchObject({
                   stale: false,
                 });
               });
@@ -800,7 +811,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature })).toMatchObject({
+                expect(testStale({ feature })).toMatchObject({
                   stale: false,
                 });
               });
@@ -876,7 +887,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -884,7 +895,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -960,7 +971,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -968,7 +979,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -1026,7 +1037,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature })).toMatchObject({
+                expect(testStale({ feature })).toMatchObject({
                   stale: false,
                 });
               });
@@ -1034,7 +1045,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature })).toMatchObject({
+                expect(testStale({ feature })).toMatchObject({
                   stale: false,
                 });
               });
@@ -1110,7 +1121,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -1118,7 +1129,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -1194,7 +1205,7 @@ describe("isFeatureStale", () => {
             describe("and has been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 1);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -1202,7 +1213,7 @@ describe("isFeatureStale", () => {
             describe("and has not been updated within past two weeks", () => {
               it("is not stale", () => {
                 feature.dateUpdated = subWeeks(new Date(), 3);
-                expect(isFeatureStale({ feature, experiments })).toMatchObject({
+                expect(testStale({ feature, experiments })).toMatchObject({
                   stale: false,
                 });
               });
@@ -1249,7 +1260,7 @@ describe("isFeatureStale", () => {
       describe("and has been updated within past two weeks", () => {
         it("is not stale", () => {
           feature.dateUpdated = subWeeks(new Date(), 1);
-          expect(isFeatureStale({ feature, experiments })).toMatchObject({
+          expect(testStale({ feature, experiments })).toMatchObject({
             stale: false,
           });
         });
@@ -1257,7 +1268,7 @@ describe("isFeatureStale", () => {
       describe("and has not been updated within past two weeks", () => {
         it("is stale", () => {
           feature.dateUpdated = subWeeks(new Date(), 3);
-          expect(isFeatureStale({ feature, experiments })).toMatchObject({
+          expect(testStale({ feature, experiments })).toMatchObject({
             stale: true,
             reason: "rules-one-sided",
           });
@@ -1292,7 +1303,7 @@ describe("isFeatureStale", () => {
 
     describe("and neither the feature nor the dependent are stale", () => {
       it("is not stale", () => {
-        expect(isFeatureStale({ feature, features })).toMatchObject({
+        expect(testStale({ feature, features })).toMatchObject({
           stale: false,
         });
       });
@@ -1301,7 +1312,7 @@ describe("isFeatureStale", () => {
     describe("and the feature is stale but the dependent is not stale", () => {
       it("is not stale", () => {
         feature.dateUpdated = subWeeks(new Date(), 3);
-        expect(isFeatureStale({ feature, features })).toMatchObject({
+        expect(testStale({ feature, features })).toMatchObject({
           stale: false,
         });
       });
@@ -1312,7 +1323,7 @@ describe("isFeatureStale", () => {
         if (features?.[1]) {
           features[1].dateUpdated = subWeeks(new Date(), 3);
         }
-        expect(isFeatureStale({ feature, features })).toMatchObject({
+        expect(testStale({ feature, features })).toMatchObject({
           stale: false,
         });
       });
@@ -1324,7 +1335,7 @@ describe("isFeatureStale", () => {
         if (features?.[1]) {
           features[1].dateUpdated = subWeeks(new Date(), 3);
         }
-        expect(isFeatureStale({ feature, features })).toMatchObject({
+        expect(testStale({ feature, features })).toMatchObject({
           stale: true,
           reason: "no-rules",
         });
@@ -1343,7 +1354,7 @@ describe("isFeatureStale", () => {
         prod: { enabled: true, rules: [] },
         staging: { enabled: false, rules: [] },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.stale).toBe(true);
       expect(result.envResults).toHaveProperty("dev");
       expect(result.envResults).toHaveProperty("prod");
@@ -1358,7 +1369,7 @@ describe("isFeatureStale", () => {
       feature.environmentSettings = {
         prod: { enabled: true, rules: [] },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.envResults.prod).toMatchObject({
         stale: true,
         reason: "no-rules",
@@ -1384,7 +1395,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.envResults.prod).toMatchObject({
         stale: true,
         reason: "rules-one-sided",
@@ -1409,7 +1420,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.stale).toBe(false);
       expect(result.envResults.prod).toMatchObject({ stale: false });
       expect(result.envResults.prod).not.toHaveProperty("evaluatesTo");
@@ -1433,7 +1444,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.stale).toBe(false);
       expect(result.envResults.dev.stale).toBe(true);
       expect(result.envResults.prod.stale).toBe(false);
@@ -1444,7 +1455,7 @@ describe("isFeatureStale", () => {
       feature.environmentSettings = {
         prod: { enabled: true, rules: [] },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result).toMatchObject({ stale: false, reason: "never-stale" });
       expect(result.envResults.prod).toMatchObject({
         stale: true,
@@ -1457,7 +1468,7 @@ describe("isFeatureStale", () => {
       feature.environmentSettings = {
         prod: { enabled: true, rules: [] },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.stale).toBe(false);
       expect(result.reason).toBe("recently-updated");
       expect(result.envResults.prod).toMatchObject({
@@ -1472,7 +1483,7 @@ describe("isFeatureStale", () => {
       feature.environmentSettings = {
         prod: { enabled: true, rules: [] },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.envResults.prod?.evaluatesTo).toBe('{"key":"val"}');
     });
 
@@ -1482,7 +1493,7 @@ describe("isFeatureStale", () => {
       feature.environmentSettings = {
         prod: { enabled: true, rules: [] },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.envResults.prod?.evaluatesTo).toBe("42");
     });
 
@@ -1516,7 +1527,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature, experiments });
+      const result = testStale({ feature, experiments });
       // experiment is shadowed — env should be stale (rules-one-sided) not active-experiment
       expect(result.envResults.prod).toMatchObject({
         stale: true,
@@ -1546,7 +1557,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature, experiments });
+      const result = testStale({ feature, experiments });
       expect(result.envResults.prod).toMatchObject({
         stale: false,
         reason: "active-experiment",
@@ -1577,7 +1588,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.envResults.prod).toMatchObject({
         stale: false,
         reason: "has-rules",
@@ -1612,7 +1623,7 @@ describe("isFeatureStale", () => {
 
     describe("and neither the feature nor the dependent exp are stale", () => {
       it("is not stale", () => {
-        expect(isFeatureStale({ feature, experiments })).toMatchObject({
+        expect(testStale({ feature, experiments })).toMatchObject({
           stale: false,
         });
       });
@@ -1621,7 +1632,7 @@ describe("isFeatureStale", () => {
     describe("and the feature is stale but the dependent exp is not stale", () => {
       it("is not stale", () => {
         feature.dateUpdated = subWeeks(new Date(), 3);
-        expect(isFeatureStale({ feature, experiments })).toMatchObject({
+        expect(testStale({ feature, experiments })).toMatchObject({
           stale: false,
         });
       });
@@ -1632,7 +1643,7 @@ describe("isFeatureStale", () => {
         if (experiments?.[0]) {
           experiments[0].status = "stopped";
         }
-        expect(isFeatureStale({ feature, experiments })).toMatchObject({
+        expect(testStale({ feature, experiments })).toMatchObject({
           stale: false,
         });
       });
@@ -1644,7 +1655,7 @@ describe("isFeatureStale", () => {
         if (experiments?.[0]) {
           experiments[0].status = "stopped";
         }
-        expect(isFeatureStale({ feature, experiments })).toMatchObject({
+        expect(testStale({ feature, experiments })).toMatchObject({
           stale: true,
           reason: "no-rules",
         });
@@ -1675,7 +1686,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result.stale).toBe(false);
       expect(result.envResults.dev).toMatchObject({
         stale: true,
@@ -1702,7 +1713,7 @@ describe("isFeatureStale", () => {
           ],
         },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result).toMatchObject({ stale: false, reason: "never-stale" });
       expect(result.envResults.dev).toMatchObject({
         stale: true,
@@ -1719,7 +1730,7 @@ describe("isFeatureStale", () => {
       feature.environmentSettings = {
         prod: { enabled: true, rules: [] },
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result).toMatchObject({
         stale: false,
         reason: "recently-updated",
@@ -1734,7 +1745,7 @@ describe("isFeatureStale", () => {
       feature.environmentSettings = {
         prod: { enabled: true, rules: [] },
       };
-      const result = isFeatureStale({
+      const result = testStale({
         feature,
         mostRecentDraftDate: new Date(), // draft updated just now
       });
@@ -1765,7 +1776,7 @@ describe("isFeatureStale", () => {
       };
       const abandonedDate = new Date();
       abandonedDate.setMonth(abandonedDate.getMonth() - 2);
-      const result = isFeatureStale({
+      const result = testStale({
         feature,
         mostRecentDraftDate: abandonedDate,
       });
@@ -1786,7 +1797,7 @@ describe("isFeatureStale", () => {
       };
       const abandonedDate = new Date();
       abandonedDate.setMonth(abandonedDate.getMonth() - 2);
-      const result = isFeatureStale({
+      const result = testStale({
         feature,
         mostRecentDraftDate: abandonedDate,
       });
@@ -1812,7 +1823,7 @@ describe("isFeatureStale", () => {
       dependentExp.phases[0].prerequisites = [
         { id: feature.id, condition: `{"value": true}` },
       ];
-      const result = isFeatureStale({
+      const result = testStale({
         feature,
         experiments: [dependentExp],
         dependentExperiments: [dependentExp],
@@ -1841,7 +1852,7 @@ describe("isFeatureStale", () => {
           ],
         }, // rules-one-sided
       };
-      const result = isFeatureStale({ feature });
+      const result = testStale({ feature });
       expect(result).toMatchObject({ stale: true, reason: "no-rules" });
       expect(result.envResults.dev).toMatchObject({
         stale: true,

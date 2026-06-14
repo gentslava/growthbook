@@ -82,7 +82,6 @@ export default function ExperimentMetricsSelector({
       }
 
       if (isGroup) {
-        // Check if metric group contains cross fact-table ratio metrics
         const metricGroup = metricGroups.find((mg) => mg.id === metricId);
         if (!metricGroup) {
           return { disabled: false };
@@ -91,34 +90,22 @@ export default function ExperimentMetricsSelector({
           metricGroup.metrics,
           metricGroups,
         );
-        const hasInvalidMetrics = expandedIds.some((id) => {
+
+        // Event quantile metrics require KLL support for incremental refresh.
+        const hasUnsupportedEventQuantileMetrics = expandedIds.some((id) => {
           const metric = getExperimentMetricById(id);
           return (
             metric &&
-            "numerator" in metric &&
-            !!metric.denominator &&
-            metric.numerator.factTableId !== metric.denominator.factTableId
+            quantileMetricType(metric) === "event" &&
+            !datasourceObj?.properties?.hasQuantileSketch
           );
         });
 
-        if (hasInvalidMetrics) {
+        if (hasUnsupportedEventQuantileMetrics) {
           return {
             disabled: true,
             reason:
-              "We currently don't support cross fact-table metrics with Incremental Refresh",
-          };
-        }
-
-        // Check if metric group contains quantile metrics
-        const hasQuantileMetrics = expandedIds.some((id) => {
-          const metric = getExperimentMetricById(id);
-          return metric && quantileMetricType(metric);
-        });
-
-        if (hasQuantileMetrics) {
-          return {
-            disabled: true,
-            reason: "Not supported with Incremental Refresh while in beta",
+              "Event quantile metrics with Incremental Refresh require a data source that supports KLL quantile sketches.",
           };
         }
 
@@ -135,26 +122,18 @@ export default function ExperimentMetricsSelector({
           };
         }
       } else {
-        // Check if individual metric is a cross fact-table ratio metric
         const metric = getExperimentMetricById(metricId);
+
+        // Event quantile metrics require KLL support for incremental refresh.
         if (
           metric &&
-          "numerator" in metric &&
-          !!metric.denominator &&
-          metric.numerator.factTableId !== metric.denominator.factTableId
+          quantileMetricType(metric) === "event" &&
+          !datasourceObj?.properties?.hasQuantileSketch
         ) {
           return {
             disabled: true,
             reason:
-              "We currently don't support cross fact-table metrics with Incremental Refresh",
-          };
-        }
-
-        // Check if metric is a quantile metric
-        if (metric && quantileMetricType(metric)) {
-          return {
-            disabled: true,
-            reason: "Not supported with Incremental Refresh while in beta",
+              "Event quantile metrics with Incremental Refresh require a data source that supports KLL quantile sketches.",
           };
         }
 

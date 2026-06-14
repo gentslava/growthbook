@@ -1,5 +1,4 @@
 import { omit } from "lodash";
-import { UpdateFactTableResponse } from "shared/types/openapi";
 import { updateFactTableValidator } from "shared/validators";
 import { UpdateFactTableProps } from "shared/types/fact-table";
 import { queueFactTableColumnsRefresh } from "back-end/src/jobs/refreshFactTableColumns";
@@ -12,6 +11,11 @@ import {
 } from "back-end/src/models/FactTableModel";
 import { addTagsDiff } from "back-end/src/models/TagModel";
 import { createApiRequestHandler } from "back-end/src/util/handler";
+import {
+  resolveOwnerToUserId,
+  resolveOwnerEmail,
+} from "back-end/src/services/owner";
+import { validateAggregatedFactTableSettings } from "back-end/src/util/factTable";
 
 // Type override to handle auto-generated OpenAPI types vs internal types
 type UpdateFactTableRequest = Omit<UpdateFactTableProps, "columns"> & {
@@ -20,7 +24,7 @@ type UpdateFactTableRequest = Omit<UpdateFactTableProps, "columns"> & {
 
 export const updateFactTable = createApiRequestHandler(
   updateFactTableValidator,
-)(async (req): Promise<UpdateFactTableResponse> => {
+)(async (req) => {
   const factTable = await getFactTable(req.context, req.params.id);
   if (!factTable) {
     throw new Error("Could not find factTable with that id");
@@ -37,12 +41,11 @@ export const updateFactTable = createApiRequestHandler(
     }
   }
 
+  let datasource: Awaited<ReturnType<typeof getDataSourceById>> | undefined;
+
   // Validate userIdTypes
   if (req.body.userIdTypes) {
-    const datasource = await getDataSourceById(
-      req.context,
-      factTable.datasource,
-    );
+    datasource ??= await getDataSourceById(req.context, factTable.datasource);
     if (!datasource) {
       throw new Error("Could not find datasource for this fact table");
     }
@@ -57,7 +60,28 @@ export const updateFactTable = createApiRequestHandler(
     }
   }
 
+  if (req.body.aggregatedFactTableSettings) {
+    if (!req.context.hasPremiumFeature("pipeline-mode")) {
+      throw new Error(
+        "Maintaining shared daily aggregated tables requires the data pipeline feature.",
+      );
+    }
+    datasource ??= await getDataSourceById(req.context, factTable.datasource);
+    if (!datasource) {
+      throw new Error("Could not find datasource for this fact table");
+    }
+    if (!req.context.permissions.canUpdateDataSourceSettings(datasource)) {
+      req.context.permissions.throwPermissionError();
+    }
+    validateAggregatedFactTableSettings(
+      req.body.aggregatedFactTableSettings,
+      req.body.userIdTypes ?? factTable.userIdTypes,
+    );
+  }
+
   const data: UpdateFactTableProps = { ...req.body } as UpdateFactTableRequest;
+  const resolvedOwner = await resolveOwnerToUserId(req.body.owner, req.context);
+  if (req.body.owner !== undefined) data.owner = resolvedOwner ?? "";
 
   // Handle column property updates only (no creation/deletion of columns)
   if (data.columns) {
@@ -105,26 +129,30 @@ export const updateFactTable = createApiRequestHandler(
     await addTagsDiff(req.organization.id, factTable.tags, data.tags);
   }
 
+  const updatedFactTable = {
+    ...factTable,
+    ...req.body,
+    columns: req.body.columns
+      ? (
+          req.body.columns as NonNullable<UpdateFactTableRequest["columns"]>
+        ).map((col) => ({
+          ...col,
+          name: col.name ?? col.column,
+          description: col.description ?? "",
+          numberFormat: col.numberFormat ?? "",
+          dateCreated:
+            factTable.columns.find((c) => c.column === col.column)
+              ?.dateCreated || new Date(),
+          dateUpdated: new Date(),
+          deleted: false,
+        }))
+      : factTable.columns,
+  };
   return {
-    factTable: toFactTableApiInterface({
-      ...factTable,
-      ...req.body,
-      columns: req.body.columns
-        ? (
-            req.body.columns as NonNullable<UpdateFactTableRequest["columns"]>
-          ).map((col) => ({
-            ...col,
-            name: col.name ?? col.column,
-            description: col.description ?? "",
-            numberFormat: col.numberFormat ?? "",
-            dateCreated:
-              factTable.columns.find((c) => c.column === col.column)
-                ?.dateCreated || new Date(),
-            dateUpdated: new Date(),
-            deleted: false,
-          }))
-        : factTable.columns,
-    }),
+    factTable: await resolveOwnerEmail(
+      toFactTableApiInterface(updatedFactTable),
+      req.context,
+    ),
   };
 });
 

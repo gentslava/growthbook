@@ -9,6 +9,8 @@ import {
   getFeatureRulesBadges,
   renderFeatureMetadataSection,
   getFeatureMetadataBadges,
+  renderFeatureHoldoutSection,
+  getFeatureHoldoutBadges,
 } from "./FeatureDiffRenders";
 
 const FEATURE_DIFF_CONFIG: AuditDiffConfig<FeatureInterface> = {
@@ -52,6 +54,17 @@ const FEATURE_DIFF_CONFIG: AuditDiffConfig<FeatureInterface> = {
         return `${nowEnabled ? "Enabled" : "Disabled"} in ${changed}`;
       }
     }
+    // Holdout add / remove / value change
+    const preHoldout = entry.preSnapshot?.holdout;
+    const postHoldout = entry.postSnapshot?.holdout;
+    if (preHoldout?.id !== postHoldout?.id) {
+      if (!preHoldout && postHoldout) return "Added to holdout";
+      if (preHoldout && !postHoldout) return "Removed from holdout";
+      return "Changed holdout";
+    }
+    if (preHoldout && postHoldout && preHoldout.value !== postHoldout.value) {
+      return "Changed holdout value";
+    }
     return null;
   },
   defaultGroupBy: "minute",
@@ -66,7 +79,11 @@ const FEATURE_DIFF_CONFIG: AuditDiffConfig<FeatureInterface> = {
     },
     {
       label: "Rules",
-      keys: ["environmentSettings"],
+      // Post-v2: rules live on the flat `rules` top-level array; the per-env
+      // `enabled` flag still lives on `environmentSettings`. Claim both so the
+      // differ's key-picking covers toggles and rule mutations in one section,
+      // and neither key leaks into the overflow "other changes" bucket.
+      keys: ["rules", "environmentSettings"],
       suppressCardLabel: true,
       render: renderFeatureRulesSection,
       getBadges: getFeatureRulesBadges,
@@ -76,6 +93,12 @@ const FEATURE_DIFF_CONFIG: AuditDiffConfig<FeatureInterface> = {
       keys: ["archived", "description", "owner", "project", "tags"],
       render: renderFeatureMetadataSection,
       getBadges: getFeatureMetadataBadges,
+    },
+    {
+      label: "Holdout value",
+      keys: ["holdout"],
+      render: renderFeatureHoldoutSection,
+      getBadges: getFeatureHoldoutBadges,
     },
   ],
 };

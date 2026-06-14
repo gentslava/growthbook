@@ -17,13 +17,14 @@ import {
 import { getScopedSettings } from "shared/settings";
 import { generateTrackingKey, getEqualWeights } from "shared/experiments";
 import { kebabCase, debounce } from "lodash";
-import { Box, Flex, Text, Heading, Separator } from "@radix-ui/themes";
+import { Box, Flex, Heading, Separator } from "@radix-ui/themes";
 import {
   FaCheckCircle,
   FaExclamationCircle,
   FaExternalLinkAlt,
 } from "react-icons/fa";
 import { PiCaretDownFill } from "react-icons/pi";
+import Text from "@/ui/Text";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { useWatching } from "@/services/WatchProvider";
 import { useAuth } from "@/services/auth";
@@ -38,6 +39,7 @@ import {
   generateVariationId,
   useAttributeSchema,
   useEnvironments,
+  validateUnregisteredAttributes,
 } from "@/services/features";
 import useOrgSettings, { useAISettings } from "@/hooks/useOrgSettings";
 import { hasOpenAIKey, hasMistralKey, hasGoogleAIKey } from "@/services/env";
@@ -86,6 +88,15 @@ import ExperimentStatusIndicator from "@/components/Experiment/TabbedPage/Experi
 import { useHoldouts } from "@/hooks/useHoldouts";
 import PremiumTooltip from "@/components/Marketing/PremiumTooltip";
 import ExperimentMetricsSelector from "./ExperimentMetricsSelector";
+
+export type FormVariation = {
+  id: string;
+  name: string;
+  key: string;
+  description?: string;
+  screenshots: { path: string }[];
+  weight: number;
+};
 
 const weekAgo = new Date();
 weekAgo.setDate(weekAgo.getDate() - 7);
@@ -193,6 +204,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const [allowDuplicateTrackingKey, setAllowDuplicateTrackingKey] =
     useState(false);
   const [autoRefreshResults, setAutoRefreshResults] = useState(true);
+  const [useSameSeedAsOriginal, setUseSameSeedAsOriginal] = useState(false);
 
   const { datasources, getDatasourceById, refreshTags, project, projects } =
     useDefinitions();
@@ -245,7 +257,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const { refreshWatching } = useWatching();
 
   const { data: sdkConnectionsData } = useSDKConnections();
-  const hasSDKWithNoBucketingV2 = !allConnectionsSupportBucketingV2(
+  const initialHasSDKWithNoBucketingV2 = !allConnectionsSupportBucketingV2(
     sdkConnectionsData?.connections,
     project,
   );
@@ -253,6 +265,10 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const [conditionKey, forceConditionRender] = useIncrementer();
 
   const attributeSchema = useAttributeSchema(false, project);
+  // Unfiltered schema for client-side validation — lets us tell apart
+  // truly-unknown attributes from attributes that exist but are scoped to
+  // other projects, matching the back-end's project-scope-aware check.
+  const allAttributesSchema = useAttributeSchema(false);
   const hashAttributes =
     attributeSchema?.filter((a) => a.hashAttribute)?.map((a) => a.property) ||
     [];
@@ -264,6 +280,15 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const orgStickyBucketing = !!settings.useStickyBucketing;
   const lastPhase = (initialValue?.phases?.length ?? 1) - 1;
   const initialHashAttribute = initialValue?.hashAttribute || hashAttribute;
+
+  const initialExpVariations =
+    initialValue?.variations ?? getDefaultVariations(initialNumVariations);
+  const toPhaseVariations = (vars: Variation[]) =>
+    vars.map((v) => ({
+      id: v.id,
+      status: "active" as const,
+    }));
+  const toEqualWeights = (vars: Variation[]) => getEqualWeights(vars.length);
 
   const form = useForm<Partial<ExperimentInterfaceStringDates>>({
     defaultValues: {
@@ -282,7 +307,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
       activationMetric: initialValue?.activationMetric || "",
       hashAttribute: initialHashAttribute,
       hashVersion:
-        initialValue?.hashVersion || (hasSDKWithNoBucketingV2 ? 1 : 2),
+        initialValue?.hashVersion || (initialHasSDKWithNoBucketingV2 ? 1 : 2),
       disableStickyBucketing: initialValue?.disableStickyBucketing ?? false,
       attributionModel:
         initialValue?.attributionModel ??
@@ -294,9 +319,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
       targetURLRegex: initialValue?.targetURLRegex || "",
       description: initialValue?.description || "",
       guardrailMetrics: initialValue?.guardrailMetrics || [],
-      variations: initialValue?.variations
-        ? initialValue.variations
-        : getDefaultVariations(initialNumVariations),
+      variations: initialExpVariations,
       phases: [
         ...(initialValue?.phases?.[lastPhase]
           ? [
@@ -307,36 +330,33 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                   initialValue.phases?.[lastPhase]?.dateStarted ?? "",
                 )
                   .toISOString()
-                  .substr(0, 16),
+                  .substring(0, 16),
                 dateEnded: getValidDate(
                   initialValue.phases?.[lastPhase]?.dateEnded ?? "",
                 )
                   .toISOString()
-                  .substr(0, 16),
+                  .substring(0, 16),
                 name: initialValue.phases?.[lastPhase]?.name || "Main",
                 reason: "",
                 variationWeights:
-                  initialValue.phases?.[lastPhase]?.variationWeights ||
-                  getEqualWeights(
-                    initialValue.variations
-                      ? initialValue.variations.length
-                      : 2,
-                  ),
+                  initialValue.phases[lastPhase].variationWeights ??
+                  toEqualWeights(initialExpVariations),
+                variations:
+                  initialValue.phases[lastPhase].variations ??
+                  toPhaseVariations(initialExpVariations),
+                // Clear seed when duplicating to generate a fresh one on the backend
+                ...(duplicate ? { seed: undefined } : {}),
               },
             ]
           : [
               {
                 coverage: 1,
-                dateStarted: new Date().toISOString().substr(0, 16),
-                dateEnded: new Date().toISOString().substr(0, 16),
+                dateStarted: new Date().toISOString().substring(0, 16),
+                dateEnded: new Date().toISOString().substring(0, 16),
                 name: "Main",
                 reason: "",
-                variationWeights: getEqualWeights(
-                  (initialValue?.variations
-                    ? initialValue.variations
-                    : getDefaultVariations(initialNumVariations)
-                  )?.length || 2,
-                ),
+                variationWeights: toEqualWeights(initialExpVariations),
+                variations: toPhaseVariations(initialExpVariations),
               },
             ]),
       ],
@@ -359,6 +379,11 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   });
 
   const selectedProject = form.watch("project");
+  const hasSDKWithNoBucketingV2 = !allConnectionsSupportBucketingV2(
+    sdkConnectionsData?.connections,
+    selectedProject,
+  );
+
   const customFields = filterCustomFieldsForSectionAndProject(
     useCustomFields(),
     "experiment",
@@ -374,6 +399,80 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
   const willExperimentBeIncludedInIncrementalRefresh =
     isPipelineIncrementalEnabledForDatasource &&
     datasource?.settings.pipelineSettings?.includedExperimentIds === undefined;
+
+  // Combined variations: merges experiment-level Variation metadata
+  // (name, key, screenshots) with phase-level variationWeights.
+  const watchedExpVariations = form.watch("variations") ?? [];
+  const watchedWeights = form.watch("phases.0.variationWeights") ?? [];
+  const combinedVariations: FormVariation[] = watchedExpVariations.map(
+    (v, i) => ({
+      id: v.id || "",
+      name: v.name,
+      key: v.key || `${i}`,
+      description: v.description,
+      screenshots: v.screenshots,
+      weight: watchedWeights[i] ?? 1 / (watchedExpVariations.length || 2),
+    }),
+  );
+
+  const setCombinedVariations = useCallback(
+    (
+      v: {
+        value?: string;
+        id?: string;
+        name?: string;
+        weight: number;
+        description?: string;
+        screenshots?: { path: string }[];
+      }[],
+    ) => {
+      const normalizedVariations = v.map((data, i) => ({
+        ...data,
+        key: data.value ?? `${i}`,
+        id: data.id || generateVariationId(),
+      }));
+
+      form.setValue(
+        "variations",
+        normalizedVariations.map((data) => ({
+          name: data.name ?? "",
+          description: data.description ?? "",
+          screenshots: data.screenshots ?? [],
+          key: data.key,
+          id: data.id,
+        })),
+      );
+      form.setValue(
+        "phases.0.variationWeights",
+        normalizedVariations.map((data) => data.weight),
+      );
+      form.setValue(
+        "phases.0.variations",
+        normalizedVariations.map((data) => ({
+          id: data.id,
+          status: "active" as const,
+        })),
+      );
+    },
+    [form],
+  );
+
+  const setVariationWeight = useCallback(
+    (i: number, weight: number) => {
+      form.setValue(`phases.0.variationWeights.${i}`, weight);
+    },
+    [form],
+  );
+
+  // Props for FeatureVariationsInput derived from the combined variations
+  const variationsForInput = combinedVariations.map((v) => ({
+    value: v.key || "",
+    name: v.name,
+    weight: v.weight,
+    id: v.id,
+    description: v.description,
+    screenshots: v.screenshots,
+  }));
 
   const { apiCall } = useAuth();
 
@@ -421,6 +520,23 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
         throw new Error("Prerequisite targeting issues must be resolved");
       }
 
+      // Opt-in client-side pre-flight — catches typo'd experiment attributes
+      // before the network round-trip, same wording as the back-end error.
+      validateUnregisteredAttributes(
+        {
+          hashAttribute: (data as { hashAttribute?: string }).hashAttribute,
+          fallbackAttribute: (data as { fallbackAttribute?: string })
+            .fallbackAttribute,
+          condition: data.phases[0].condition,
+        },
+        "experiment",
+        {
+          attributeSchema: allAttributesSchema,
+          requireRegisteredAttributes: settings.requireRegisteredAttributes,
+          project: data.project || project || undefined,
+        },
+      );
+
       // bandits
       if (
         data.type === "multi-armed-bandit" &&
@@ -454,6 +570,12 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
       }
     }
 
+    if (duplicate && data.phases?.[0]) {
+      data.phases[0].seed = useSameSeedAsOriginal
+        ? initialValue?.phases?.[lastPhase]?.seed
+        : undefined;
+    }
+
     const body = JSON.stringify(data);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -463,6 +585,9 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
     }
     if (duplicate && initialValue?.id) {
       params.originalId = initialValue.id;
+      if (useSameSeedAsOriginal) {
+        params.allowSameSeedAsOriginal = true;
+      }
     }
 
     if (autoRefreshResults && isImport) {
@@ -773,7 +898,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                       return (
                         <Flex as="div" align="baseline">
                           <Text>{value.label}</Text>
-                          <Text size="1" className="text-muted" ml="auto">
+                          <Text size="small" color="text-mid" ml="auto">
                             Created {date(t.dateCreated)}
                           </Text>
                         </Flex>
@@ -845,17 +970,38 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               }}
             />
 
-            <Field
-              label="Tracking Key"
-              helpText={`Unique identifier for this ${
-                isBandit ? "Bandit" : "Experiment"
-              }, used to track impressions and analyze results`}
-              {...trackingKeyFieldHandlers}
-              onChange={(e) => {
-                trackingKeyFieldHandlers.onChange(e);
-                setLinkNameWithTrackingKey(false);
-              }}
-            />
+            <div className="form-group">
+              <Text as="label" weight="semibold" mb="1">
+                Tracking Key
+              </Text>
+              <Text as="div" color="text-mid" mb="2">
+                {`Unique identifier for this ${
+                  isBandit ? "Bandit" : "Experiment"
+                }, used to track impressions and analyze results`}
+              </Text>
+              <Field
+                {...trackingKeyFieldHandlers}
+                onChange={(e) => {
+                  trackingKeyFieldHandlers.onChange(e);
+                  setLinkNameWithTrackingKey(false);
+                }}
+              />
+            </div>
+            {duplicate && (
+              <Box mb="4">
+                <Checkbox
+                  label="Use same randomization seed as original experiment"
+                  value={useSameSeedAsOriginal}
+                  setValue={(v) => setUseSameSeedAsOriginal(v)}
+                  error={
+                    useSameSeedAsOriginal
+                      ? "Can introduce bias if the original experiment influenced user behavior."
+                      : undefined
+                  }
+                  errorLevel="warning"
+                />
+              </Box>
+            )}
             {!isBandit && (
               <Field
                 label="Hypothesis"
@@ -908,7 +1054,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                 <Box my="4">
                   <Flex gap="2" className="text-muted" align="center">
                     <FaExclamationCircle />
-                    <Text size="2" weight="light">
+                    <Text weight="regular">
                       Enter more details to check for similar experiments
                     </Text>
                   </Flex>
@@ -919,51 +1065,47 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <Box my="4">
                       <Flex gap="2" className="text-muted">
                         <LoadingSpinner />
-                        <Text size="2">
-                          Checking for similar experiments...
-                        </Text>
+                        <Text>Checking for similar experiments...</Text>
                       </Flex>
                     </Box>
                   ) : (
                     <>
                       <Box my="4">
-                        <Text size="2" color="violet">
-                          {similarExperiments.length > 0 ? (
-                            <Flex
-                              onClick={(e) => {
-                                e.preventDefault();
-                                setExpandSimilarResults(!expandSimilarResults);
-                              }}
-                              gap="2"
-                              align="center"
-                            >
-                              <PiCaretDownFill
-                                style={{
-                                  transition: "transform 0.3s ease",
-                                  transform: expandSimilarResults
-                                    ? "none"
-                                    : "rotate(-90deg)",
+                        <span style={{ color: "var(--violet-11)" }}>
+                          <Text>
+                            {similarExperiments.length > 0 ? (
+                              <Flex
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setExpandSimilarResults(
+                                    !expandSimilarResults,
+                                  );
                                 }}
-                              />
-                              <Text
-                                weight="medium"
-                                style={{
-                                  cursor: "pointer",
-                                  color: "violet-11",
-                                }}
+                                gap="2"
+                                align="center"
                               >
-                                Similar experiment
-                                {similarExperiments.length === 1 ? "" : "s"} (
-                                {similarExperiments.length})
-                              </Text>
-                            </Flex>
-                          ) : (
-                            <Flex gap="2" align="center">
-                              <FaCheckCircle />
-                              No similar experiments found
-                            </Flex>
-                          )}
-                        </Text>
+                                <PiCaretDownFill
+                                  style={{
+                                    transition: "transform 0.3s ease",
+                                    transform: expandSimilarResults
+                                      ? "none"
+                                      : "rotate(-90deg)",
+                                  }}
+                                />
+                                <Text weight="medium" as="span">
+                                  Similar experiment
+                                  {similarExperiments.length === 1 ? "" : "s"} (
+                                  {similarExperiments.length})
+                                </Text>
+                              </Flex>
+                            ) : (
+                              <Flex gap="2" align="center">
+                                <FaCheckCircle />
+                                No similar experiments found
+                              </Flex>
+                            )}
+                          </Text>
+                        </span>
                         {expandSimilarResults && (
                           <Flex
                             gap="3"
@@ -1009,7 +1151,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                                       </span>
                                     </Flex>
                                     <Flex gap="3" align="center">
-                                      <Text size="1" className="text-muted">
+                                      <Text size="small" color="text-mid">
                                         {date(s.experiment.dateCreated)}
                                       </Text>
                                       <ExperimentStatusIndicator
@@ -1120,7 +1262,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <ExperimentRefNewFields
                       step={i}
                       source="experiment"
-                      project={project}
+                      project={selectedProject}
                       environments={envs}
                       noSchedule={true}
                       prerequisiteValue={
@@ -1148,39 +1290,9 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                       setCoverage={(coverage) =>
                         form.setValue("phases.0.coverage", coverage)
                       }
-                      setWeight={(i, weight) =>
-                        form.setValue(`phases.0.variationWeights.${i}`, weight)
-                      }
-                      variations={
-                        form.watch("variations")?.map((v, i) => {
-                          return {
-                            value: v.key || "",
-                            name: v.name,
-                            weight: form.watch(
-                              `phases.0.variationWeights.${i}`,
-                            ),
-                            id: v.id,
-                          };
-                        }) ?? []
-                      }
-                      setVariations={(v) => {
-                        form.setValue(
-                          "variations",
-                          v.map((data, i) => {
-                            return {
-                              // default values
-                              name: "",
-                              screenshots: [],
-                              ...data,
-                              key: data.value || `${i}` || "",
-                            };
-                          }),
-                        );
-                        form.setValue(
-                          "phases.0.variationWeights",
-                          v.map((v) => v.weight),
-                        );
-                      }}
+                      setWeight={setVariationWeight}
+                      variations={variationsForInput}
+                      setVariations={setCombinedVariations}
                       variationValuesAsIds={true}
                       hideVariationIds={!isImport}
                       orgStickyBucketing={orgStickyBucketing}
@@ -1203,7 +1315,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <BanditRefNewFields
                       step={i}
                       source="experiment"
-                      project={project}
+                      project={selectedProject}
                       environments={envs}
                       prerequisiteValue={
                         form.watch("phases.0.prerequisites") || []
@@ -1230,39 +1342,9 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                       setCoverage={(coverage) =>
                         form.setValue("phases.0.coverage", coverage)
                       }
-                      setWeight={(i, weight) =>
-                        form.setValue(`phases.0.variationWeights.${i}`, weight)
-                      }
-                      variations={
-                        form.watch("variations")?.map((v, i) => {
-                          return {
-                            value: v.key || "",
-                            name: v.name,
-                            weight: form.watch(
-                              `phases.0.variationWeights.${i}`,
-                            ),
-                            id: v.id,
-                          };
-                        }) ?? []
-                      }
-                      setVariations={(v) => {
-                        form.setValue(
-                          "variations",
-                          v.map((data, i) => {
-                            return {
-                              // default values
-                              name: "",
-                              screenshots: [],
-                              ...data,
-                              key: data.value || `${i}` || "",
-                            };
-                          }),
-                        );
-                        form.setValue(
-                          "phases.0.variationWeights",
-                          v.map((v) => v.weight),
-                        );
-                      }}
+                      setWeight={setVariationWeight}
+                      variations={variationsForInput}
+                      setVariations={setCombinedVariations}
                       disableBanditConversionWindow={
                         disableBanditConversionWindow
                       }
@@ -1283,40 +1365,43 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               {isNewExperiment && (
                 <>
                   <div className="d-flex" style={{ gap: "2rem" }}>
-                    <SelectField
-                      withRadixThemedPortal
-                      containerClassName="flex-1"
-                      label="Assign variation based on attribute"
-                      labelClassName="font-weight-bold"
-                      options={attributeSchema
-                        .filter((s) => !hasHashAttributes || s.hashAttribute)
-                        .map((s) => ({
-                          label: s.property,
-                          value: s.property,
-                          description: s.description,
-                          tags: s.tags,
-                          datatype: s.datatype,
-                          hashAttribute: s.hashAttribute,
-                        }))}
-                      sort={false}
-                      value={form.watch("hashAttribute") || ""}
-                      onChange={(v) => {
-                        form.setValue("hashAttribute", v);
-                      }}
-                      formatOptionLabel={(o, meta) => {
-                        return (
-                          <AttributeOptionWithTooltip
-                            option={o as AttributeOptionForTooltip}
-                            context={meta.context}
-                          >
-                            {o.label}
-                          </AttributeOptionWithTooltip>
-                        );
-                      }}
-                      helpText={
-                        "Will be hashed together with the seed (UUID) to determine which variation to assign"
-                      }
-                    />
+                    <div className="flex-1">
+                      <Text as="label" weight="semibold" mb="1">
+                        Assign variation based on attribute
+                      </Text>
+                      <Text as="div" color="text-mid" mb="2">
+                        Will be hashed together with the seed (UUID) to
+                        determine which variation to assign
+                      </Text>
+                      <SelectField
+                        withRadixThemedPortal
+                        options={attributeSchema
+                          .filter((s) => !hasHashAttributes || s.hashAttribute)
+                          .map((s) => ({
+                            label: s.property,
+                            value: s.property,
+                            description: s.description,
+                            tags: s.tags,
+                            datatype: s.datatype,
+                            hashAttribute: s.hashAttribute,
+                          }))}
+                        sort={false}
+                        value={form.watch("hashAttribute") || ""}
+                        onChange={(v) => {
+                          form.setValue("hashAttribute", v);
+                        }}
+                        formatOptionLabel={(o, meta) => {
+                          return (
+                            <AttributeOptionWithTooltip
+                              option={o as AttributeOptionForTooltip}
+                              context={meta.context}
+                            >
+                              {o.label}
+                            </AttributeOptionWithTooltip>
+                          );
+                        }}
+                      />
+                    </div>
                     <FallbackAttributeSelector
                       form={form}
                       attributeSchema={attributeSchema}
@@ -1327,11 +1412,11 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     <HashVersionSelector
                       value={(form.watch("hashVersion") || 1) as 1 | 2}
                       onChange={(v) => form.setValue("hashVersion", v)}
-                      project={project}
+                      project={selectedProject}
                     />
                   )}
 
-                  <hr />
+                  <Separator size="4" my="5" />
                   <SavedGroupTargetingField
                     value={form.watch("phases.0.savedGroups") || []}
                     setValue={(savedGroups) =>
@@ -1339,7 +1424,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     }
                     project={project}
                   />
-                  <hr />
+                  <Separator size="4" my="5" />
                   <ConditionInput
                     defaultValue={form.watch("phases.0.condition") || ""}
                     onChange={(value) =>
@@ -1348,7 +1433,7 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     key={conditionKey}
                     project={project}
                   />
-                  <hr />
+                  <Separator size="4" my="5" />
                   <PrerequisiteInput
                     value={form.watch("phases.0.prerequisites") || []}
                     setValue={(prerequisites) =>
@@ -1366,6 +1451,8 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     form={form}
                     featureId={""}
                     trackingKey={""}
+                    experimentHashAttribute={form.watch("hashAttribute")}
+                    fallbackAttribute={form.watch("fallbackAttribute")}
                   />
                 </>
               )}
@@ -1388,39 +1475,11 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
                     ? "This can be changed later"
                     : "This is just for documentation purposes and has no effect on the analysis."
                 }
-                setWeight={(i, weight) =>
-                  form.setValue(`phases.0.variationWeights.${i}`, weight)
-                }
+                setWeight={setVariationWeight}
                 valueAsId={false}
                 startEditingIndexes={true}
-                variations={
-                  form.watch("variations")?.map((v, i) => {
-                    return {
-                      value: v.key || "",
-                      name: v.name,
-                      weight: form.watch(`phases.0.variationWeights.${i}`),
-                      id: v.id,
-                    };
-                  }) ?? []
-                }
-                setVariations={(v) => {
-                  form.setValue(
-                    "variations",
-                    v.map((data, i) => {
-                      return {
-                        name: "",
-                        screenshots: [],
-                        ...data,
-                        // use value as key if provided to maintain backwards compatibility
-                        key: data.value || `${i}` || "",
-                      };
-                    }),
-                  );
-                  form.setValue(
-                    "phases.0.variationWeights",
-                    v.map((v) => v.weight),
-                  );
-                }}
+                variations={variationsForInput}
+                setVariations={setCombinedVariations}
                 hideVariationIds={false}
                 showPreview={!!isNewExperiment}
                 disableCustomSplit={type === "multi-armed-bandit"}
@@ -1495,7 +1554,6 @@ const NewExperimentForm: FC<NewExperimentFormProps> = ({
               <ExperimentMetricsSelector
                 datasource={datasource?.id}
                 noLegacyMetrics={willExperimentBeIncludedInIncrementalRefresh}
-                excludeQuantiles={willExperimentBeIncludedInIncrementalRefresh}
                 exposureQueryId={exposureQueryId}
                 project={project}
                 goalMetrics={form.watch("goalMetrics") ?? []}

@@ -8,6 +8,7 @@ import {
   getDefaultRole,
 } from "shared/permissions";
 import {
+  DEFAULT_CONFIDENCE_LEVEL,
   DEFAULT_MAX_PERCENT_CHANGE,
   DEFAULT_METRIC_CAPPING,
   DEFAULT_METRIC_CAPPING_VALUE,
@@ -22,7 +23,6 @@ import {
 } from "shared/constants";
 import { AIModel, EmbeddingModel } from "shared/ai";
 import { SSOConnectionInterface } from "shared/types/sso-connection";
-import { SegmentInterface } from "shared/types/segment";
 import {
   MetricCappingSettings,
   MetricPriorSettings,
@@ -45,6 +45,7 @@ import { DimensionInterface } from "shared/types/dimension";
 import { DataSourceInterface } from "shared/types/datasource";
 import { LegacyExperimentPhase } from "shared/types/experiment";
 import { PValueCorrection } from "shared/types/stats";
+import { getScopedSettings } from "shared/settings";
 import {
   createOrganization,
   findAllOrganizations,
@@ -53,7 +54,12 @@ import {
   findOrganizationsByDomain,
   updateOrganization,
 } from "back-end/src/models/OrganizationModel";
-import { APP_ORIGIN, IS_CLOUD } from "back-end/src/util/secrets";
+import {
+  APP_ORIGIN,
+  GEMINI_IMAGE_MODEL,
+  IS_CLOUD,
+  IS_MULTI_ORG,
+} from "back-end/src/util/secrets";
 import { AuthRequest } from "back-end/src/types/AuthRequest";
 import { ReqContext } from "back-end/types/request";
 import { ApiReqContext, ExperimentOverride } from "back-end/types/api";
@@ -89,7 +95,12 @@ import {
   mergeParams,
 } from "./datasource";
 import { createMetric } from "./experiments";
-import { isEmailEnabled, sendInviteEmail, sendNewMemberEmail } from "./email";
+import {
+  isEmailEnabled,
+  sendInviteEmail,
+  sendNewMemberEmail,
+  sendPendingMemberEmail,
+} from "./email";
 import { ReqContextClass } from "./context";
 
 export {
@@ -99,6 +110,20 @@ export {
 
 export async function getOrganizationById(id: string) {
   return findOrganizationById(id);
+}
+
+export async function setLicenseKey(
+  org: OrganizationInterface,
+  licenseKey: string,
+) {
+  if (!IS_CLOUD && IS_MULTI_ORG) {
+    throw new Error(
+      "You must use the LICENSE_KEY environmental variable on multi org sites.",
+    );
+  }
+
+  org.licenseKey = licenseKey;
+  await licenseInit(org, getUserCodesForOrg, getLicenseMetaData, true);
 }
 
 export function validateLoginMethod(
@@ -169,13 +194,67 @@ export function getContextFromReq(req: AuthRequest): ReqContext {
   });
 }
 
-export function getConfidenceLevelsForOrg(context: ReqContext) {
-  const ciUpper = context.org.settings?.confidenceLevel || 0.95;
+async function resolveScopedSettingsForProject(
+  context: ReqContext,
+  projectId: string | undefined,
+) {
+  const project =
+    projectId && projectId.length > 0
+      ? (await context.getProjects()).find((p) => p.id === projectId)
+      : undefined;
+  return getScopedSettings({
+    organization: context.org,
+    project,
+  });
+}
+
+function confidenceLevelsFromScopedSettings(
+  settings: ReturnType<typeof getScopedSettings>["settings"],
+) {
+  const ciUpper = settings.confidenceLevel.value || DEFAULT_CONFIDENCE_LEVEL;
   return {
     ciUpper,
     ciLower: 1 - ciUpper,
     ciUpperDisplay: Math.round(ciUpper * 100) + "%",
     ciLowerDisplay: Math.round((1 - ciUpper) * 100) + "%",
+  };
+}
+
+export async function getConfidenceLevelsForProject(
+  context: ReqContext,
+  projectId: string | undefined,
+) {
+  const { settings } = await resolveScopedSettingsForProject(
+    context,
+    projectId,
+  );
+  return confidenceLevelsFromScopedSettings(settings);
+}
+
+/**
+ * Resolves all significance-related settings (confidence levels, p-value
+ * threshold, p-value correction) with a single call.
+ */
+export async function getSignificanceSettingsForProject(
+  context: ReqContext,
+  projectId: string | undefined,
+): Promise<{
+  ciUpper: number;
+  ciLower: number;
+  ciUpperDisplay: string;
+  ciLowerDisplay: string;
+  pValueThreshold: number;
+  pValueCorrection: PValueCorrection;
+}> {
+  const { settings } = await resolveScopedSettingsForProject(
+    context,
+    projectId,
+  );
+  return {
+    ...confidenceLevelsFromScopedSettings(settings),
+    pValueThreshold:
+      settings.pValueThreshold.value ?? DEFAULT_P_VALUE_THRESHOLD,
+    pValueCorrection: settings.pValueCorrection.value ?? null,
   };
 }
 
@@ -191,12 +270,20 @@ export function getAISettingsForOrg(
   googleAPIKey: string;
   defaultAIModel: AIModel;
   embeddingModel: EmbeddingModel;
+  // Resolved Visual Editor overrides — both already fall back to a
+  // sensible default so callers don't need their own resolution logic.
+  visualEditorAIModel: AIModel;
+  visualEditorImageModel: string;
+  // Free-text brand guidelines appended to the AI system prompt.
+  visualEditorAIContext: string;
 } {
   const openAIKey = process.env.OPENAI_API_KEY || "";
   const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
   const xaiKey = process.env.XAI_API_KEY || "";
   const mistralKey = process.env.MISTRAL_API_KEY || "";
-  const googleKey = process.env.GOOGLE_AI_API_KEY || "";
+  // GEMINI_API_KEY is the legacy name; GOOGLE_AI_API_KEY is preferred.
+  const googleKey =
+    process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY || "";
 
   const hasValidKey = !!(
     openAIKey ||
@@ -210,6 +297,18 @@ export function getAISettingsForOrg(
     ? !!context.org.settings?.aiEnabled
     : !!(context.org.settings?.aiEnabled && hasValidKey);
 
+  const defaultAIModel: AIModel = IS_CLOUD
+    ? "claude-haiku-4-5-20251001"
+    : context.org.settings?.defaultAIModel ||
+      context.org.settings?.openAIDefaultModel ||
+      "gpt-5.4-mini";
+
+  // Per-surface override outranks the cloud-managed default — intentional.
+  const visualEditorAIModel: AIModel =
+    context.org.settings?.visualEditorAIModel || defaultAIModel;
+  const visualEditorImageModel: string =
+    context.org.settings?.visualEditorImageModel || GEMINI_IMAGE_MODEL;
+
   return {
     aiEnabled,
     openAIAPIKey: includeKey ? openAIKey : "",
@@ -217,12 +316,14 @@ export function getAISettingsForOrg(
     xaiAPIKey: includeKey ? xaiKey : "",
     mistralAPIKey: includeKey ? mistralKey : "",
     googleAPIKey: includeKey ? googleKey : "",
-    defaultAIModel:
-      context.org.settings?.defaultAIModel ||
-      context.org.settings?.openAIDefaultModel ||
-      "gpt-4o-mini",
+    defaultAIModel,
     embeddingModel:
       context.org.settings?.embeddingModel || "text-embedding-ada-002",
+    visualEditorAIModel,
+    visualEditorImageModel,
+    visualEditorAIContext: (
+      context.org.settings?.visualEditorAIContext || ""
+    ).trim(),
   };
 }
 
@@ -258,14 +359,28 @@ export function getMetricDefaultsForOrg(context: ReqContext): MetricDefaults {
   return context.org.settings?.metricDefaults || METRIC_DEFAULTS;
 }
 
-export function getPValueThresholdForOrg(context: ReqContext): number {
-  return context.org.settings?.pValueThreshold ?? DEFAULT_P_VALUE_THRESHOLD;
+export async function getPValueThresholdForProject(
+  context: ReqContext,
+  // undefined project means fall back to org setting
+  projectId: string | undefined,
+): Promise<number> {
+  const { settings } = await resolveScopedSettingsForProject(
+    context,
+    projectId,
+  );
+  return settings.pValueThreshold.value ?? DEFAULT_P_VALUE_THRESHOLD;
 }
 
-export function getPValueCorrectionForOrg(
+export async function getPValueCorrectionForProject(
   context: ReqContext,
-): PValueCorrection {
-  return context.org.settings?.pValueCorrection ?? null;
+  // undefined project means fall back to org setting
+  projectId: string | undefined,
+): Promise<PValueCorrection> {
+  const { settings } = await resolveScopedSettingsForProject(
+    context,
+    projectId,
+  );
+  return settings.pValueCorrection.value ?? null;
 }
 
 export function getRole(
@@ -622,21 +737,25 @@ export async function inviteUser({
   limitAccessByEnvironment,
   environments,
   projectRoles,
+  invitedBy,
 }: {
   organization: OrganizationInterface;
   email: string;
+  invitedBy?: string;
 } & MemberRoleWithProjects) {
   organization.invites = organization.invites || [];
 
-  // User is already invited
-  if (
-    organization.invites.filter((invite) => invite.email === email).length > 0
-  ) {
+  email = email.toLowerCase();
+
+  // User is already invited (legacy invites may have been stored with
+  // mixed case, so compare case-insensitively).
+  const existingInvite = organization.invites.find(
+    (invite) => invite.email.toLowerCase() === email,
+  );
+  if (existingInvite) {
     return {
       emailSent: true,
-      inviteUrl: getInviteUrl(
-        organization.invites.filter((invite) => invite.email === email)[0].key,
-      ),
+      inviteUrl: getInviteUrl(existingInvite.key),
     };
   }
 
@@ -670,6 +789,7 @@ export async function inviteUser({
       limitAccessByEnvironment,
       environments,
       projectRoles,
+      invitedBy,
     },
   ];
 
@@ -947,12 +1067,7 @@ export async function importConfig(
         try {
           const existing = await context.models.segments.getById(k);
           if (existing) {
-            const updates: Partial<SegmentInterface> = {
-              ...s,
-            };
-            delete updates.organization;
-
-            await context.models.segments.update(existing, updates);
+            await context.models.segments.update(existing, s);
           } else {
             await context.models.segments.create({
               ...s,
@@ -1104,6 +1219,36 @@ export async function addMemberFromSSOConnection(
     organization = orgs[0];
   }
   if (!organization) return null;
+
+  // If the org has explicitly disabled autoApproveMembers, add the user as a pending member
+  // This differs from the non-SSO path (`undefined` is auto-approved there) to preserve existing behavior
+  if (organization.autoApproveMembers === false) {
+    const alreadyPending = organization.pendingMembers?.some(
+      (m) => m.id === req.userId,
+    );
+    if (!alreadyPending) {
+      await addPendingMemberToOrg({
+        organization,
+        name: req.name || "",
+        email: req.email || "",
+        userId: req.userId,
+        ...getDefaultRole(organization),
+      });
+      try {
+        const teamUrl = APP_ORIGIN + "/settings/team/?org=" + organization.id;
+        await sendPendingMemberEmail(
+          req.name || "",
+          req.email || "",
+          organization.name,
+          organization.ownerEmail,
+          teamUrl,
+        );
+      } catch (e) {
+        req.log.error(e, "Failed to send pending member email");
+      }
+    }
+    return null;
+  }
 
   await addMemberToOrg({
     organization,

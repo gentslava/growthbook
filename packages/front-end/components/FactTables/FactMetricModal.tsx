@@ -28,6 +28,7 @@ import {
   getColumnRefWhereClause,
   getSelectedColumnDatatype,
 } from "shared/experiments";
+import { createLikeStringMatchFn } from "shared/sql";
 import { PiArrowSquareOut, PiPlus } from "react-icons/pi";
 import { DataSourceInterfaceWithParams } from "shared/types/datasource";
 import { useDefinitions } from "@/services/DefinitionsContext";
@@ -688,6 +689,10 @@ function getWHERE({
           factTable,
           columnRef,
           escapeStringLiteral: (s) => s.replace(/'/g, "''"),
+          stringMatch: createLikeStringMatchFn({
+            escapeStringLiteral: (s) => s.replace(/'/g, "''"),
+            emitEscapeClause: false,
+          }),
           // This isn't real SQL syntax for most dialects, but it should get the point across
           jsonExtract: (jsonCol, path) => `${jsonCol}.${path}`,
           evalBoolean: (col, value) => `${col} IS ${value ? "TRUE" : "FALSE"}`,
@@ -1610,9 +1615,9 @@ export default function FactMetricModal({
             });
           }
 
-          const updatePayload: UpdateFactMetricProps = omit(values, [
+          const updatePayload = omit(values, [
             "datasource",
-          ]);
+          ]) as UpdateFactMetricProps;
           await apiCall(`/fact-metrics/${existing.id}`, {
             method: "PUT",
             body: JSON.stringify(updatePayload),
@@ -2367,7 +2372,6 @@ export default function FactMetricModal({
                                     inputGroupClassName="d-inline-flex w-150px"
                                     append="days"
                                     min="0"
-                                    max="100"
                                     disabled={!hasRegressionAdjustmentFeature}
                                     helpText={
                                       <>
@@ -2384,8 +2388,7 @@ export default function FactMetricModal({
                                       {
                                         valueAsNumber: true,
                                         validate: (v) => {
-                                          v = v || 0;
-                                          return !(v <= 0 || v > 100);
+                                          return v === undefined || v > 0;
                                         },
                                       },
                                     )}

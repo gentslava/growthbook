@@ -1,4 +1,5 @@
-import mongoose from "mongoose";
+import mongoose, { FilterQuery } from "mongoose";
+import { evalCondition } from "@growthbook/growthbook";
 import { ExperimentMetricInterface } from "shared/experiments";
 import {
   InsertMetricProps,
@@ -13,6 +14,7 @@ import { ApiReqContext } from "back-end/types/api";
 import {
   ToInterface,
   getCollection,
+  projectFilterQuery,
   removeMongooseFields,
 } from "back-end/src/util/mongo.util";
 import { generateEmbeddings } from "back-end/src/enterprise/services/ai";
@@ -144,6 +146,8 @@ const metricSchema = new mongoose.Schema({
 });
 
 metricSchema.index({ id: 1, organization: 1 }, { unique: true });
+// Compound indexes for API list filtering
+metricSchema.index({ organization: 1, datasource: 1 });
 
 const MetricModel = mongoose.model<LegacyMetricInterface>(
   "Metric",
@@ -159,27 +163,35 @@ export async function insertMetric(
   context: ReqContext | ApiReqContext,
   metric: Partial<MetricInterface>,
 ) {
+  const metricWithOrganization = {
+    ...metric,
+    organization: context.org.id,
+  };
+
   if (usingFileConfig() && !ALLOW_CREATE_METRICS) {
     throw new Error("Cannot add new metrics. Metrics managed by config.yml");
   }
 
-  if (metric.managedBy === "api" && context.auditUser?.type !== "api_key") {
+  if (
+    metricWithOrganization.managedBy === "api" &&
+    context.auditUser?.type !== "api_key"
+  ) {
     throw new Error(
       "Cannot mark a metric as managed by the API outside of the API.",
     );
   }
 
-  if (metric.managedBy === "admin") {
+  if (metricWithOrganization.managedBy === "admin") {
     throw new Error(
       "We have deprecated support for marking Legacy Metrics as Official via the UI. We suggest using Fact Metrics instead.",
     );
   }
 
-  if (!context.permissions.canCreateMetric(metric)) {
+  if (!context.permissions.canCreateMetric(metricWithOrganization)) {
     context.permissions.throwPermissionError();
   }
 
-  const created = toInterface(await MetricModel.create(metric));
+  const created = toInterface(await MetricModel.create(metricWithOrganization));
   await audit.logCreate(context, created);
   return created;
 }
@@ -191,7 +203,12 @@ export async function insertMetrics(
   if (usingFileConfig() && !ALLOW_CREATE_METRICS) {
     throw new Error("Cannot add metrics. Metrics managed by config.yml");
   }
-  for (const metric of metrics) {
+  const metricsWithOrganization = metrics.map((metric) => ({
+    ...metric,
+    organization: context.org.id,
+  }));
+
+  for (const metric of metricsWithOrganization) {
     if (metric.managedBy === "api" && context.auditUser?.type !== "api_key") {
       throw new Error(
         "Cannot mark a metric as managed by the API outside of the API.",
@@ -206,7 +223,9 @@ export async function insertMetrics(
       context.permissions.throwPermissionError();
     }
   }
-  const created = (await MetricModel.insertMany(metrics)).map(toInterface);
+  const created = (await MetricModel.insertMany(metricsWithOrganization)).map(
+    toInterface,
+  );
   for (const metric of created) {
     await audit.logAutocreate(context, metric);
   }
@@ -295,28 +314,15 @@ export async function getMetricMap(
 
 async function findMetrics(
   context: ReqContext | ApiReqContext,
-  additionalQuery?: Partial<MetricInterface>,
+  additionalQuery?: FilterQuery<LegacyMetricInterface>,
 ) {
   const metrics: MetricInterface[] = [];
   const metricIds = new Set<string>();
 
   // If using config.yml, first check there
   if (usingFileConfig()) {
-    const filter = additionalQuery
-      ? (m: MetricInterface) => {
-          for (const key in additionalQuery) {
-            if (
-              m[key as keyof MetricInterface] !==
-              additionalQuery[key as keyof MetricInterface]
-            ) {
-              return false;
-            }
-          }
-          return true;
-        }
-      : false;
     getConfigMetrics(context)
-      .filter((m) => !filter || filter(m))
+      .filter((m) => !additionalQuery || evalCondition(m, additionalQuery))
       .forEach((m) => {
         metrics.push(m);
         metricIds.add(m.id);
@@ -356,8 +362,17 @@ async function findMetrics(
 
 export async function getMetricsByOrganization(
   context: ReqContext | ApiReqContext,
+  options?: {
+    datasourceId?: string;
+    projectId?: string;
+  },
 ) {
-  return findMetrics(context);
+  const query: FilterQuery<LegacyMetricInterface> = {
+    ...(options?.datasourceId && { datasource: options.datasourceId }),
+    ...(options?.projectId && projectFilterQuery(options.projectId)),
+  };
+
+  return findMetrics(context, query);
 }
 
 export async function getMetricsByDatasource(
@@ -521,8 +536,8 @@ function addDateUpdatedToUpdates(
   // If any field requires dateUpdated to be set
   if (
     Object.keys(updates).some(
-      (k: keyof MetricInterface) =>
-        !FIELDS_NOT_REQUIRING_DATE_UPDATED.includes(k),
+      (k) =>
+        !FIELDS_NOT_REQUIRING_DATE_UPDATED.includes(k as keyof MetricInterface),
     )
   ) {
     return { ...updates, dateUpdated: new Date() };
@@ -554,8 +569,8 @@ export async function updateMetric(
 ) {
   updates = addDateUpdatedToUpdates(updates);
 
-  const safeUpdates = Object.keys(updates).every((k: keyof MetricInterface) =>
-    FILE_CONFIG_UPDATEABLE_FIELDS.includes(k),
+  const safeUpdates = (Object.keys(updates) as (keyof MetricInterface)[]).every(
+    (k) => FILE_CONFIG_UPDATEABLE_FIELDS.includes(k),
   );
   if (!safeUpdates) {
     if (metric.managedBy === "config") {
